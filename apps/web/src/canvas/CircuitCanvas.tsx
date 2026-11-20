@@ -8,6 +8,7 @@ import {
   Wire,
   buildNetlist,
   getPinWorldPosition,
+  isMcuBoardType,
   pinKey,
   rotateExitDir,
   routeWire,
@@ -38,6 +39,7 @@ interface CircuitCanvasProps {
   onSelectPart: (id: string | null) => void;
   onSelectWire: (id: string | null) => void;
   onMovePart: (partId: string, x: number, y: number, commit: boolean) => void;
+  onRotatePart: (partId: string) => void;
   onAddWire: (from: PinRef, to: PinRef, waypoints: Point[]) => void;
   onDeleteWire: (wireId: string) => void;
   onDeletePart: (partId: string) => void;
@@ -91,6 +93,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onSelectPart,
   onSelectWire,
   onMovePart,
+  onRotatePart,
   onAddWire,
   onDeleteWire,
   onDeletePart,
@@ -126,7 +129,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   } | null>(null);
   const dragStateRef = useRef<
     | { kind: 'pan'; startClient: Point; startView: Point; moved: boolean }
-    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; moved: boolean }
+    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; moved: boolean; wasSelected: boolean }
     | { kind: 'button'; partId: string }
     | { kind: 'keypad'; partId: string; row: number; col: number }
     | null
@@ -398,6 +401,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         }
       }
 
+      const wasSelected = selectedPartId === hitPart.id;
       onSelectPart(hitPart.id);
       dragStateRef.current = {
         kind: 'part',
@@ -405,6 +409,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         startWorld: world,
         origPart: { x: hitPart.x, y: hitPart.y },
         moved: false,
+        wasSelected,
       };
       return;
     }
@@ -513,9 +518,13 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       onPressKeypadKey(drag.partId, drag.row, drag.col, false);
       return;
     }
-    if (drag?.kind === 'part' && drag.moved) {
-      const p = parts.find((item) => item.id === drag.partId);
-      if (p) onMovePart(p.id, p.x, p.y, true);
+    if (drag?.kind === 'part') {
+      if (drag.moved) {
+        const p = parts.find((item) => item.id === drag.partId);
+        if (p) onMovePart(p.id, p.x, p.y, true);
+      } else if (drag.wasSelected) {
+        onOpenInspector();
+      }
       return;
     }
     if (drag?.kind === 'pan' && !drag.moved) {
@@ -571,9 +580,14 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           ? t.modeDeleteHint
           : t.modeAutoHint;
 
+  const selectedPartObj = useMemo(
+    () => parts.find((p) => p.id === selectedPartId) ?? null,
+    [parts, selectedPartId]
+  );
+
   return (
-    <div ref={stageRef} className="canvas-stage">
-      {/* Floating Canvas Toolbar with crisp domain-specific icons + clear labels */}
+    <div className="canvas-stage">
+      {/* Docked single-row Canvas Toolbar (scrolls horizontally on compact/touch screens; never covers canvas) */}
       <div className="canvas-toolbar">
         <div className="toolbar-group" role="group" aria-label="Canvas interaction modes">
           <button
@@ -632,15 +646,6 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           <button type="button" className="btn btn-compact btn-primary" onClick={onOpenPartPicker}>
             + {t.addPart}
           </button>
-          {(selectedPartId || selectedWireId) && (
-            <button
-              type="button"
-              className="btn btn-compact mobile-only-btn"
-              onClick={onOpenInspector}
-            >
-              {t.inspector}
-            </button>
-          )}
           <button type="button" className="btn btn-compact" onClick={onUndo} disabled={!canUndo} aria-label={t.undo} title={t.undo}>
             ↶
           </button>
@@ -671,9 +676,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         </div>
       </div>
 
-      {/* Main SVG Canvas */}
-      <svg
-        className="canvas-svg"
+      {/* Unobstructed SVG Viewport */}
+      <div ref={stageRef} className="canvas-viewport">
+        <svg
+          className="canvas-svg"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -836,35 +842,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
       {/* Empty canvas state card (R-27) */}
       {parts.length === 0 && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 20,
-            pointerEvents: 'none',
-          }}
-        >
-          <div
-            style={{
-              maxWidth: 360,
-              padding: 18,
-              borderRadius: 'var(--radius-lg)',
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-strong)',
-              boxShadow: 'var(--shadow-float)',
-              textAlign: 'center',
-              pointerEvents: 'auto',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-            }}
-          >
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{t.canvasEmptyTitle}</div>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t.canvasEmptyDesc}</div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+        <div className="canvas-empty-overlay">
+          <div className="canvas-empty-card">
+            <div className="canvas-empty-title">{t.canvasEmptyTitle}</div>
+            <div className="canvas-empty-desc">{t.canvasEmptyDesc}</div>
+            <div className="canvas-empty-actions">
               <button type="button" className="btn btn-primary" onClick={onOpenPartPicker}>
                 + {t.addPart}
               </button>
@@ -882,6 +864,38 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         </div>
       )}
 
+      {/* Compact floating quick-action bar for touch/tablet when a part or wire is selected */}
+      {!wireDraft && (selectedPartObj || selectedWireId) && (
+        <div className="selection-pill" role="toolbar" aria-label={t.inspector}>
+          <button type="button" className="btn btn-compact btn-primary" onClick={onOpenInspector}>
+            {t.inspector}
+          </button>
+          {selectedPartObj && !isMcuBoardType(selectedPartObj.type) && (
+            <button
+              type="button"
+              className="btn btn-compact"
+              onClick={() => onRotatePart(selectedPartObj.id)}
+              aria-label={t.rotate}
+              title={t.rotate}
+            >
+              ↻
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-compact btn-danger"
+            onClick={() => {
+              if (selectedPartObj) onDeletePart(selectedPartObj.id);
+              else if (selectedWireId) onDeleteWire(selectedWireId);
+            }}
+            aria-label={t.deleteSelected}
+            title={t.deleteSelected}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {wireDraft ? (
         <div className="wiring-banner" role="status" aria-live="polite">
           <span>{t.wiringPrompt(wireDraft.fromLabel)}</span>
@@ -896,6 +910,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       ) : (
         <div className="canvas-hint-bar">{activeModeHint}</div>
       )}
+      </div>
     </div>
   );
 };

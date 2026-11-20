@@ -113,6 +113,10 @@ function createBlankDiagram(lang: Lang, board: BoardId = 'arduino-uno'): Circuit
   };
 }
 
+function isDesktopViewport(): boolean {
+  return typeof window !== 'undefined' && window.innerWidth >= 1100 && window.innerHeight > 540;
+}
+
 export const App: React.FC = () => {
   const [lang, setLang] = useState<Lang>(() => {
     const saved = localStorage.getItem('ardusim_lang');
@@ -132,7 +136,9 @@ export const App: React.FC = () => {
 
   const [mode, setMode] = useState<CanvasToolMode>('auto');
   const [mobileTab, setMobileTab] = useState<'circuit' | 'code' | 'serial'>('circuit');
-  const [tabletShowCode, setTabletShowCode] = useState(true);
+  const [tabletShowCode, setTabletShowCode] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 900 : true
+  );
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -418,13 +424,15 @@ export const App: React.FC = () => {
   const handleSelectPart = (id: string | null) => {
     setSelectedPartId(id);
     setSelectedWireId(null);
-    if (id) setInspectorOpen(true);
+    if (!id) setInspectorOpen(false);
+    else if (isDesktopViewport()) setInspectorOpen(true);
   };
 
   const handleSelectWire = (id: string | null) => {
     setSelectedWireId(id);
     setSelectedPartId(null);
-    if (id) setInspectorOpen(true);
+    if (!id) setInspectorOpen(false);
+    else if (isDesktopViewport()) setInspectorOpen(true);
   };
 
   const handleAddPart = (type: string) => {
@@ -439,7 +447,7 @@ export const App: React.FC = () => {
         }
         setSelectedPartId(existingMcu.id);
         setSelectedWireId(null);
-        setInspectorOpen(true);
+        if (isDesktopViewport()) setInspectorOpen(true);
         return;
       }
       handleStop();
@@ -456,7 +464,7 @@ export const App: React.FC = () => {
       setDiagram((d) => ({ ...d, board: type, parts: [nextBoard, ...d.parts] }));
       setSelectedPartId(nextBoard.id);
       setSelectedWireId(null);
-      setInspectorOpen(true);
+      if (isDesktopViewport()) setInspectorOpen(true);
       setFitTrigger((n) => n + 1);
       return;
     }
@@ -476,7 +484,7 @@ export const App: React.FC = () => {
     setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
     setSelectedPartId(nextPart.id);
     setSelectedWireId(null);
-    setInspectorOpen(true);
+    if (isDesktopViewport()) setInspectorOpen(true);
   };
 
   const handleMovePart = (partId: string, x: number, y: number, commit: boolean) => {
@@ -624,15 +632,14 @@ export const App: React.FC = () => {
               <circle cx="16" cy="15" r="2.3" fill="var(--primary-fg)" />
               <path d="M10.3 9 H12 V15 H13.7" fill="none" stroke="var(--primary-fg)" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
-            <span>{t.appName}</span>
+            <span className="brand-text">{t.appName}</span>
           </div>
 
           <select
-            className="select-input"
+            className="select-input board-select"
             aria-label={t.boardLabel}
             value={diagram.board}
             onChange={(e) => handleBoardSwitch(e.target.value as BoardId)}
-            style={{ width: 'auto', minHeight: 36, padding: '2px 8px', fontSize: 13, fontWeight: 600 }}
           >
             <option value="arduino-uno">{t.boardUno}</option>
             <option value="arduino-nano">{t.boardNano}</option>
@@ -712,146 +719,169 @@ export const App: React.FC = () => {
         </span>
       </div>
 
-      {/* Main Responsive Workspace */}
-      <main className="workspace">
-        <section
-          className={`pane-code ${mobileTab === 'circuit' ? 'mobile-hidden' : ''} ${!tabletShowCode ? 'tablet-hidden' : ''}`}
-          aria-label="Code and Serial workspace"
-        >
-          <div className={mobileTab === 'serial' ? 'mobile-hidden editor-container' : 'editor-container'}>
-            <CodeEditor
-              value={diagram.sketch}
-              onChange={(next) => {
-                setOverrideHex(null);
-                setDiagram((d) => ({ ...d, sketch: next }));
-              }}
-              theme={theme}
-              compileError={compileError}
+      {/* Main Responsive Workspace + Adaptive Bottom/Side-Rail Navigation */}
+      <div className="shell-body">
+        <main className="workspace">
+          <section
+            className={`pane-code ${mobileTab === 'circuit' ? 'mobile-hidden' : ''} ${!tabletShowCode ? 'tablet-hidden' : ''}`}
+            aria-label="Code and Serial workspace"
+          >
+            <div className={mobileTab === 'serial' ? 'mobile-hidden editor-container' : 'editor-container'}>
+              <CodeEditor
+                value={diagram.sketch}
+                onChange={(next) => {
+                  setOverrideHex(null);
+                  setDiagram((d) => ({ ...d, sketch: next }));
+                }}
+                theme={theme}
+                compileError={compileError}
+                t={t}
+              />
+            </div>
+
+            <div
+              className={`serial-pane-wrap ${mobileTab === 'code' ? 'mobile-hidden' : ''} ${mobileTab === 'serial' ? 'mobile-full' : ''}`}
+            >
+              <SerialMonitor
+                output={serialOutput}
+                running={running}
+                fullPane={mobileTab === 'serial'}
+                onClear={() => setSerialOutput('')}
+                onSend={(text) => {
+                  workerRef.current?.postMessage({
+                    type: 'serialInput',
+                    text,
+                  } satisfies WorkerInMessage);
+                }}
+                t={t}
+              />
+            </div>
+          </section>
+
+          <section
+            className={`pane-canvas ${mobileTab !== 'circuit' ? 'mobile-hidden' : ''}`}
+            aria-label={t.tabCircuit}
+          >
+            <CircuitCanvas
+              parts={diagram.parts}
+              wires={diagram.wires}
+              snapshot={snapshot}
+              running={running}
+              mode={mode}
+              onModeChange={setMode}
+              selectedPartId={selectedPartId}
+              selectedWireId={selectedWireId}
+              onSelectPart={handleSelectPart}
+              onSelectWire={handleSelectWire}
+              onMovePart={handleMovePart}
+              onRotatePart={handleRotatePart}
+              onAddWire={handleAddWire}
+              onDeleteWire={handleDeleteWire}
+              onDeletePart={handleDeletePart}
+              onPressButton={handlePressButton}
+              onPressKeypadKey={handlePressKeypadKey}
+              pressedButtons={pressedButtons}
+              pressedKeypadKeys={pressedKeypadKeys}
+              canUndo={undoStack.length > 0}
+              canRedo={redoStack.length > 0}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
+              onTidyWires={handleTidyWires}
+              fitTrigger={fitTrigger}
+              onOpenPartPicker={() => setPartPickerOpen(true)}
+              onOpenFileMenu={() => setProjectMenuOpen(true)}
+              onOpenInspector={() => setInspectorOpen(true)}
               t={t}
             />
-          </div>
+          </section>
 
-          <div
-            className={mobileTab === 'code' ? 'mobile-hidden' : ''}
-            style={{ display: 'flex', flexDirection: 'column', flex: mobileTab === 'serial' ? 1 : undefined }}
+          {inspectorOpen && (
+            <div
+              className="inspector-backdrop"
+              onClick={() => setInspectorOpen(false)}
+              aria-hidden="true"
+            />
+          )}
+
+          <aside
+            className={`pane-inspector ${!inspectorOpen ? 'drawer-closed' : ''}`}
+            aria-label={t.inspector}
           >
-            <SerialMonitor
-              output={serialOutput}
-              running={running}
-              fullPane={mobileTab === 'serial'}
-              onClear={() => setSerialOutput('')}
-              onSend={(text) => {
+            <PartInspector
+              selectedPart={selectedPart}
+              selectedWire={selectedWire}
+              snapshot={snapshot}
+              pressedButtons={pressedButtons}
+              pressedKeypadKeys={pressedKeypadKeys}
+              buzzerAudioEnabled={buzzerAudioEnabled}
+              onToggleBuzzerAudio={() => setBuzzerAudioEnabled((v) => !v)}
+              onUpdatePartProps={handleUpdatePartProps}
+              onRotatePart={handleRotatePart}
+              onDeletePart={handleDeletePart}
+              onUpdateWireColor={handleUpdateWireColor}
+              onDeleteWire={handleDeleteWire}
+              onPressButton={handlePressButton}
+              onPressKeypadKey={handlePressKeypadKey}
+              onSendBluetooth={(partId, text) => {
                 workerRef.current?.postMessage({
-                  type: 'serialInput',
+                  type: 'btInput',
+                  partId,
                   text,
                 } satisfies WorkerInMessage);
               }}
+              onClearBluetooth={(partId) => {
+                workerRef.current?.postMessage({
+                  type: 'btClear',
+                  partId,
+                } satisfies WorkerInMessage);
+              }}
+              onCloseDrawer={() => setInspectorOpen(false)}
+              lang={lang}
               t={t}
             />
-          </div>
-        </section>
+          </aside>
+        </main>
 
-        <section
-          className={`pane-canvas ${mobileTab !== 'circuit' ? 'mobile-hidden' : ''}`}
-          aria-label={t.tabCircuit}
-        >
-          <CircuitCanvas
-            parts={diagram.parts}
-            wires={diagram.wires}
-            snapshot={snapshot}
-            running={running}
-            mode={mode}
-            onModeChange={setMode}
-            selectedPartId={selectedPartId}
-            selectedWireId={selectedWireId}
-            onSelectPart={handleSelectPart}
-            onSelectWire={handleSelectWire}
-            onMovePart={handleMovePart}
-            onAddWire={handleAddWire}
-            onDeleteWire={handleDeleteWire}
-            onDeletePart={handleDeletePart}
-            onPressButton={handlePressButton}
-            onPressKeypadKey={handlePressKeypadKey}
-            pressedButtons={pressedButtons}
-            pressedKeypadKeys={pressedKeypadKeys}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-            onTidyWires={handleTidyWires}
-            fitTrigger={fitTrigger}
-            onOpenPartPicker={() => setPartPickerOpen(true)}
-            onOpenFileMenu={() => setProjectMenuOpen(true)}
-            onOpenInspector={() => setInspectorOpen(true)}
-            t={t}
-          />
-        </section>
-
-        <aside
-          className={`pane-inspector ${!inspectorOpen ? 'drawer-closed' : ''}`}
-          aria-label={t.inspector}
-        >
-          <PartInspector
-            selectedPart={selectedPart}
-            selectedWire={selectedWire}
-            snapshot={snapshot}
-            pressedButtons={pressedButtons}
-            pressedKeypadKeys={pressedKeypadKeys}
-            buzzerAudioEnabled={buzzerAudioEnabled}
-            onToggleBuzzerAudio={() => setBuzzerAudioEnabled((v) => !v)}
-            onUpdatePartProps={handleUpdatePartProps}
-            onRotatePart={handleRotatePart}
-            onDeletePart={handleDeletePart}
-            onUpdateWireColor={handleUpdateWireColor}
-            onDeleteWire={handleDeleteWire}
-            onPressButton={handlePressButton}
-            onPressKeypadKey={handlePressKeypadKey}
-            onSendBluetooth={(partId, text) => {
-              workerRef.current?.postMessage({
-                type: 'btInput',
-                partId,
-                text,
-              } satisfies WorkerInMessage);
-            }}
-            onClearBluetooth={(partId) => {
-              workerRef.current?.postMessage({
-                type: 'btClear',
-                partId,
-              } satisfies WorkerInMessage);
-            }}
-            onCloseDrawer={() => setInspectorOpen(false)}
-            lang={lang}
-            t={t}
-          />
-        </aside>
-      </main>
-
-      <nav className="mobile-bottom-nav" aria-label="Mobile workspace tabs">
-        <button
-          type="button"
-          className={`nav-tab-btn ${mobileTab === 'circuit' ? 'active' : ''}`}
-          aria-current={mobileTab === 'circuit' ? 'page' : undefined}
-          onClick={() => setMobileTab('circuit')}
-        >
-          {t.tabCircuit}
-        </button>
-        <button
-          type="button"
-          className={`nav-tab-btn ${mobileTab === 'code' ? 'active' : ''}`}
-          aria-current={mobileTab === 'code' ? 'page' : undefined}
-          onClick={() => setMobileTab('code')}
-        >
-          {t.tabCode}
-        </button>
-        <button
-          type="button"
-          className={`nav-tab-btn ${mobileTab === 'serial' ? 'active' : ''}`}
-          aria-current={mobileTab === 'serial' ? 'page' : undefined}
-          onClick={() => setMobileTab('serial')}
-        >
-          {t.tabSerial}
-        </button>
-      </nav>
+        <nav className="mobile-bottom-nav" aria-label="Mobile workspace tabs">
+          <button
+            type="button"
+            className={`nav-tab-btn ${mobileTab === 'circuit' ? 'active' : ''}`}
+            aria-current={mobileTab === 'circuit' ? 'page' : undefined}
+            onClick={() => setMobileTab('circuit')}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" strokeWidth="1.4" />
+              <circle cx="5.5" cy="8" r="1.4" fill="currentColor" />
+              <circle cx="10.5" cy="8" r="1.4" fill="currentColor" />
+              <path d="M6.9 8H9.1" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+            <span>{t.tabCircuit}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-tab-btn ${mobileTab === 'code' ? 'active' : ''}`}
+            aria-current={mobileTab === 'code' ? 'page' : undefined}
+            onClick={() => setMobileTab('code')}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M5.5 4.5L2 8L5.5 11.5M10.5 4.5L14 8L10.5 11.5M9 3L7 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{t.tabCode}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-tab-btn ${mobileTab === 'serial' ? 'active' : ''}`}
+            aria-current={mobileTab === 'serial' ? 'page' : undefined}
+            onClick={() => setMobileTab('serial')}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2" y="3" width="12" height="10" rx="1.8" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M4.5 6.5L6.5 8L4.5 9.5M8 9.5H11.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{t.tabSerial}</span>
+          </button>
+        </nav>
+      </div>
 
       <PartPickerSheet
         open={partPickerOpen}
