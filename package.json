@@ -1,0 +1,17 @@
+{
+  "name": "ardusim",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@ardusim/compiler & npm run dev --workspace=@ardusim/web",
+    "dev:web": "npm run dev --workspace=@ardusim/web",
+    "dev:compiler": "npm run dev --workspace=@ardusim/compiler",
+    "build": "npm run build --workspace=@ardusim/sim-core && npm run build --workspace=@ardusim/parts && npm run build --workspace=@ardusim/compiler && npm run build --workspace=@ardusim/web",
+    "test": "npm test --workspace=@ardusim/sim-core && npm test --workspace=@ardusim/compiler"
+  }
+}
