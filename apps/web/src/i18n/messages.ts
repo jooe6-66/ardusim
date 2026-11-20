@@ -47,6 +47,7 @@ export interface Messages {
   statusIdle: string;
   statusRunning: string;
   statusOfflineCached: string;
+  statusWaking: (elapsedSec: number) => string;
   statusCompiled: (ms: number, cached: boolean) => string;
   statusCompileError: string;
   compileErrorHint: string;
@@ -211,6 +212,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     statusIdle: 'Siap',
     statusRunning: 'Berjalan',
     statusOfflineCached: 'Berjalan offline (cache .hex)',
+    statusWaking: (sec) => `Membangunkan server compiler... (${sec} dtk)`,
     statusCompiled: (ms, cached) => (cached ? 'Compile dari cache' : `Compile selesai (${ms} ms)`),
     statusCompileError: 'Error kompilasi',
     compileErrorHint: 'Periksa baris kode yang ditandai lalu coba Jalankan lagi.',
@@ -373,6 +375,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     statusIdle: 'Ready',
     statusRunning: 'Running',
     statusOfflineCached: 'Running offline (.hex cache)',
+    statusWaking: (sec) => `Waking up compiler server... (${sec}s)`,
     statusCompiled: (ms, cached) => (cached ? 'Loaded from cache' : `Compiled in ${ms} ms`),
     statusCompileError: 'Compile error',
     compileErrorHint: 'Fix the highlighted line in Code and press Run again.',

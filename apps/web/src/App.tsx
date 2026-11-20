@@ -52,6 +52,54 @@ function downloadText(filename: string, content: string, mime: string): void {
   URL.revokeObjectURL(url);
 }
 
+async function compileWithWakeRetry(
+  board: BoardId,
+  sketch: string,
+  onWaking: (elapsedSec: number) => void
+): Promise<Response> {
+  const postCompile = () =>
+    fetch(`${COMPILER_BASE}/api/compile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ board, sketch }),
+    });
+
+  const isJson = (res: Response) =>
+    (res.headers.get('content-type') || '').toLowerCase().includes('application/json');
+
+  try {
+    const first = await postCompile();
+    if (isJson(first)) return first;
+  } catch {
+    if (!COMPILER_BASE || navigator.onLine === false) throw new Error('offline');
+  }
+
+  // Only poll wake-up for remote cloud compilers (SnapDeploy / Render / HF) that sleep on idle
+  if (!COMPILER_BASE || navigator.onLine === false) {
+    throw new Error('offline');
+  }
+
+  const startedAt = Date.now();
+  const maxWaitMs = 95_000;
+  // Trigger wake-up with a simple no-cors GET in case the sleep proxy page omits CORS headers
+  fetch(`${COMPILER_BASE}/api/health`, { mode: 'no-cors' }).catch(() => {});
+
+  while (Date.now() - startedAt < maxWaitMs) {
+    onWaking(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
+    await new Promise((r) => setTimeout(r, 4000));
+    try {
+      const health = await fetch(`${COMPILER_BASE}/api/health`);
+      if (health.ok && isJson(health)) {
+        const res = await postCompile();
+        if (isJson(res)) return res;
+      }
+    } catch {
+      // Container still booting; retry until timeout
+    }
+  }
+  throw new Error('offline');
+}
+
 function createBlankDiagram(lang: Lang, board: BoardId = 'arduino-uno'): CircuitDiagram {
   return {
     version: 1,
@@ -314,6 +362,7 @@ export const App: React.FC = () => {
 
     setCompiling(true);
     setCompileError(null);
+    setStatusText('');
 
     try {
       if (overrideHex) {
@@ -338,11 +387,9 @@ export const App: React.FC = () => {
         return;
       }
 
-      const res = await fetch(`${COMPILER_BASE}/api/compile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ board: diagram.board, sketch: diagram.sketch }),
-      });
+      const res = await compileWithWakeRetry(diagram.board, diagram.sketch, (sec) =>
+        setStatusText(t.statusWaking(sec))
+      );
 
       const data = await res.json();
       if (!res.ok) {
@@ -656,7 +703,7 @@ export const App: React.FC = () => {
           <span>
             {boardDisplayName} |{' '}
             {compiling
-              ? t.compiling
+              ? statusText || t.compiling
               : statusText || (running ? t.statusRunning : t.statusIdle)}
           </span>
         </div>
