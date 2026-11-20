@@ -1,5 +1,4 @@
-# ArduSim Compiler Image
-# Works both as a local Docker sandbox and directly on Hugging Face Spaces (Docker SDK, port 7860).
+# ArduSim Compiler Image (Node 22 + arduino-cli + arduino:avr + 10 libraries)
 FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -34,6 +33,7 @@ RUN npm install --workspace=@ardusim/sim-core --workspace=@ardusim/parts --works
 ENV NODE_ENV=production
 ENV PORT=7860
 ENV HOST=0.0.0.0
+ENV MAX_CONCURRENT_COMPILES=1
 
 EXPOSE 7860
 CMD ["node", "apps/compiler/dist/src/server.js"]
