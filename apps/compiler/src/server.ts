@@ -6,6 +6,7 @@ import { CompileError, CompilerService } from './runner.js';
 export interface ServerOptions {
   rateLimitPerMin?: number;
   maxConcurrentCompiles?: number;
+  maxQueueSize?: number;
 }
 
 class SimpleRateLimiter {
@@ -33,14 +34,66 @@ class SimpleRateLimiter {
   }
 }
 
+function parseIntEnv(raw: string | undefined, fallback: number, min: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min ? n : fallback;
+}
+
 export function createCompilerServer(
   compiler = new CompilerService(),
   opts: ServerOptions = {}
 ) {
-  const rateLimitPerMin = opts.rateLimitPerMin ?? Number(process.env.RATE_LIMIT_PER_MIN ?? 30);
-  const maxConcurrent = opts.maxConcurrentCompiles ?? Number(process.env.MAX_CONCURRENT_COMPILES ?? 2);
+  const rateLimitPerMin = opts.rateLimitPerMin ?? parseIntEnv(process.env.RATE_LIMIT_PER_MIN, 120, 1);
+  const maxConcurrent = opts.maxConcurrentCompiles ?? parseIntEnv(process.env.MAX_CONCURRENT_COMPILES, 2, 1);
+  const maxQueueSize = opts.maxQueueSize ?? parseIntEnv(process.env.MAX_QUEUE_SIZE, 24, 0);
   const limiter = new SimpleRateLimiter(rateLimitPerMin);
   let activeCompiles = 0;
+  const compileQueue: Array<() => void> = [];
+
+  const acquireSlot = (rawRes: {
+    on: (ev: 'close', cb: () => void) => unknown;
+    off?: (ev: 'close', cb: () => void) => unknown;
+    removeListener?: (ev: 'close', cb: () => void) => unknown;
+    writableEnded?: boolean;
+  }): Promise<'acquired' | 'full' | 'aborted'> => {
+    if (activeCompiles < maxConcurrent) {
+      activeCompiles++;
+      return Promise.resolve('acquired');
+    }
+    if (compileQueue.length >= maxQueueSize) {
+      return Promise.resolve('full');
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const detach = () => {
+        if (rawRes.off) rawRes.off('close', onClose);
+        else rawRes.removeListener?.('close', onClose);
+      };
+      const grant = () => {
+        if (settled) return;
+        settled = true;
+        detach();
+        activeCompiles++;
+        resolve('acquired');
+      };
+      const onClose = () => {
+        if (settled || rawRes.writableEnded) return;
+        settled = true;
+        const idx = compileQueue.indexOf(grant);
+        if (idx >= 0) compileQueue.splice(idx, 1);
+        resolve('aborted');
+      };
+      compileQueue.push(grant);
+      rawRes.on('close', onClose);
+    });
+  };
+
+  const releaseSlot = (): void => {
+    activeCompiles--;
+    const next = compileQueue.shift();
+    if (next) next();
+  };
 
   const app = Fastify({
     logger: false,
@@ -53,9 +106,12 @@ export function createCompilerServer(
     methods: ['GET', 'POST', 'OPTIONS'],
   });
 
-  app.addHook('onSend', async (_req, reply) => {
+  app.addHook('onSend', async (req, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
+    if (req.headers['access-control-request-private-network'] === 'true') {
+      reply.header('Access-Control-Allow-Private-Network', 'true');
+    }
   });
 
   app.get('/api/health', async () => {
@@ -70,6 +126,7 @@ export function createCompilerServer(
       engine,
       boards: Object.keys(BOARD_SPECS),
       activeCompiles,
+      queuedCompiles: compileQueue.length,
       maxConcurrentCompiles: maxConcurrent,
     };
   });
@@ -95,13 +152,16 @@ export function createCompilerServer(
       return reply.status(400).send({ error: 'Field "sketch" must be a string' });
     }
 
-    if (activeCompiles >= maxConcurrent) {
+    const slot = await acquireSlot(reply.raw);
+    if (slot === 'aborted') {
+      return;
+    }
+    if (slot === 'full') {
       return reply.status(503).send({
-        error: 'Compiler busy, please retry in a moment.',
+        error: 'Compiler queue is full, please retry in a moment.',
       });
     }
 
-    activeCompiles++;
     try {
       const result = await compiler.compile(board, sketch);
       return reply.status(200).send(result);
@@ -115,7 +175,7 @@ export function createCompilerServer(
       }
       return reply.status(500).send({ error: 'Unexpected compiler error' });
     } finally {
-      activeCompiles--;
+      releaseSlot();
     }
   });
 

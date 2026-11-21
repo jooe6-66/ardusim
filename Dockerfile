@@ -34,7 +34,8 @@ RUN npm install --workspace=@ardusim/sim-core --workspace=@ardusim/parts --works
 ENV NODE_ENV=production
 ENV PORT=7860
 ENV HOST=0.0.0.0
-ENV MAX_CONCURRENT_COMPILES=1
+ENV MAX_CONCURRENT_COMPILES=2
+ENV RATE_LIMIT_PER_MIN=120
 
 EXPOSE 7860
 CMD ["node", "apps/compiler/dist/src/server.js"]

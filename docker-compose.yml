@@ -1,0 +1,29 @@
+services:
+  compiler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ardusim-compiler
+    ports:
+      - "7860:7860"
+    environment:
+      PORT: 7860
+      HOST: 0.0.0.0
+      MAX_CONCURRENT_COMPILES: 2
+      MAX_QUEUE_SIZE: 24
+      RATE_LIMIT_PER_MIN: 120
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=256m,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7860/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

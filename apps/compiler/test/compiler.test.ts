@@ -162,3 +162,96 @@ test('HTTP API enforces rate limiting (429) and security response headers', asyn
 
   await app.close();
 });
+
+test('HTTP API queues concurrent compiles up to maxQueueSize and sets Private-Network header', async () => {
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((r) => {
+    markFirstStarted = r;
+  });
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((r) => {
+    releaseFirst = r;
+  });
+  let callCount = 0;
+  const stubCompiler = {
+    resolveEngine: async () => 'arduino-cli' as const,
+    compile: async () => {
+      callCount++;
+      if (callCount === 1) {
+        markFirstStarted();
+        await firstGate;
+      }
+      return { hex: ':00000001FF', cached: false, engine: 'arduino-cli' as const, durationMs: 1, logs: '' };
+    },
+  } as unknown as CompilerService;
+
+  const app = createCompilerServer(stubCompiler, {
+    rateLimitPerMin: 50,
+    maxConcurrentCompiles: 1,
+    maxQueueSize: 1,
+  });
+
+  const preflight = await app.inject({
+    method: 'OPTIONS',
+    url: '/api/compile',
+    headers: {
+      origin: 'https://ardusim.pages.dev',
+      'access-control-request-method': 'POST',
+      'access-control-request-private-network': 'true',
+    },
+  });
+  assert.equal(preflight.headers['access-control-allow-private-network'], 'true');
+
+  const payload = { board: 'arduino-uno', sketch: 'void setup(){} void loop(){}' };
+  const p1 = app.inject({ method: 'POST', url: '/api/compile', payload });
+  await firstStarted;
+
+  const p2 = app.inject({ method: 'POST', url: '/api/compile', payload });
+  for (let i = 0; i < 20; i++) {
+    const h = (await app.inject({ method: 'GET', url: '/api/health' })).json() as { queuedCompiles: number };
+    if (h.queuedCompiles === 1) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+
+  const r3 = await app.inject({ method: 'POST', url: '/api/compile', payload });
+  assert.equal(r3.statusCode, 503);
+
+  releaseFirst();
+  const [r1, r2] = await Promise.all([p1, p2]);
+  assert.equal(r1.statusCode, 200);
+  assert.equal(r2.statusCode, 200);
+
+  await app.close();
+});
+
+test('HTTP API ignores invalid non-numeric env overrides for rate limit and concurrency', async () => {
+  const prevRl = process.env.RATE_LIMIT_PER_MIN;
+  const prevConc = process.env.MAX_CONCURRENT_COMPILES;
+  const prevQueue = process.env.MAX_QUEUE_SIZE;
+  process.env.RATE_LIMIT_PER_MIN = 'abc';
+  process.env.MAX_CONCURRENT_COMPILES = '';
+  process.env.MAX_QUEUE_SIZE = '-5';
+  try {
+    const stubCompiler = {
+      resolveEngine: async () => 'arduino-cli' as const,
+      compile: async () => ({ hex: ':00000001FF', cached: false, engine: 'arduino-cli' as const, durationMs: 1, logs: '' }),
+    } as unknown as CompilerService;
+    const app = createCompilerServer(stubCompiler);
+    const health = (await app.inject({ method: 'GET', url: '/api/health' })).json() as { maxConcurrentCompiles: number };
+    assert.equal(health.maxConcurrentCompiles, 2);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/compile',
+      payload: { board: 'arduino-uno', sketch: 'void setup(){} void loop(){}' },
+    });
+    assert.equal(res.statusCode, 200);
+    await app.close();
+  } finally {
+    if (prevRl === undefined) delete process.env.RATE_LIMIT_PER_MIN;
+    else process.env.RATE_LIMIT_PER_MIN = prevRl;
+    if (prevConc === undefined) delete process.env.MAX_CONCURRENT_COMPILES;
+    else process.env.MAX_CONCURRENT_COMPILES = prevConc;
+    if (prevQueue === undefined) delete process.env.MAX_QUEUE_SIZE;
+    else process.env.MAX_QUEUE_SIZE = prevQueue;
+  }
+});
