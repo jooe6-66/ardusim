@@ -28,6 +28,7 @@ export interface Messages {
   modeMove: string;
   modeDelete: string;
   modeAutoHint: string;
+  runningAutoHint: string;
   modeWireHint: string;
   modeMoveHint: string;
   modeDeleteHint: string;
@@ -38,7 +39,10 @@ export interface Messages {
   zoomFit: string;
   tidyWires: string;
   tidyWiresHint: string;
+  tidyWiresOnlyHint: string;
   rotate: string;
+  flipH: string;
+  flipV: string;
   deleteSelected: string;
   cancelWire: string;
   wiringPrompt: (pinLabel: string) => string;
@@ -134,6 +138,8 @@ export interface Messages {
   btEmpty: string;
   libsHeading: string;
   wireColorLabel: string;
+  wireEditHint: string;
+  wireResetShape: string;
   wireRemove: string;
   serialTitle: string;
   serialClear: string;
@@ -180,7 +186,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     importIno: 'Impor .ino',
     inoLoadedNotice: 'File sketch .ino berhasil dimuat ke editor.',
     canvasEmptyTitle: 'Kanvas Kosong',
-    canvasEmptyDesc: 'Tambahkan board Arduino atau komponen untuk mulai merangkai, atau buka proyek/contoh lewat menu File.',
+    canvasEmptyDesc: 'Pilih board Arduino di pojok kiri atas, lalu tambahkan komponen untuk mulai merangkai atau buka contoh lewat menu File.',
     openFileMenu: 'Buka Menu File',
     catMcu: 'Board Arduino',
     addPart: 'Komponen',
@@ -192,7 +198,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     modeWire: 'Kabel',
     modeMove: 'Geser',
     modeDelete: 'Hapus',
-    modeAutoHint: 'Mode Pintar: ketuk pin untuk kabel, seret komponen untuk geser, 2 jari untuk zoom.',
+    modeAutoHint: 'Mode Pintar: ketuk ujung pin untuk kabel, ketuk badan komponen untuk pilih/geser, 2 jari untuk zoom.',
+    runningAutoHint: 'Simulasi aktif: ketuk tombol/keypad untuk tekan, ketuk sensor untuk atur nilai. Pilih mode Kabel untuk tambah kabel.',
     modeWireHint: 'Mode Kabel: ketuk pin A lalu pin B (titik pin ditampilkan).',
     modeMoveHint: 'Mode Geser: seret komponen atau kanvas tanpa takut salah tarik kabel.',
     modeDeleteHint: 'Mode Hapus: ketuk kabel atau komponen mana saja untuk langsung menghapus.',
@@ -202,8 +209,11 @@ export const MESSAGES: Record<Lang, Messages> = {
     zoomOut: 'Perkecil',
     zoomFit: 'Pas Layar',
     tidyWires: 'Rapikan',
-    tidyWiresHint: 'Atur ulang semua kabel secara otomatis agar rapi dan tidak menabrak komponen',
+    tidyWiresHint: 'Atur ulang posisi komponen dan jalur kabel secara otomatis agar rapi dan berjarak',
+    tidyWiresOnlyHint: 'Rapikan jalur kabel saja (posisi komponen manual tetap dipertahankan)',
     rotate: 'Putar 90°',
+    flipH: 'Flip H',
+    flipV: 'Flip V',
     deleteSelected: 'Hapus',
     cancelWire: 'Batal Kabel',
     wiringPrompt: (pin) => `Dari ${pin}: ketuk pin tujuan atau area kosong untuk belok`,
@@ -299,6 +309,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     btEmpty: 'Belum ada data dari Arduino.',
     libsHeading: 'Library Arduino Siap Pakai',
     wireColorLabel: 'Warna Kabel',
+    wireEditHint: 'Seret titik bulat untuk geser sudut, seret titik tengah garis untuk geser/belokkan kabel, ketuk ganda sudut untuk hapus belokan.',
+    wireResetShape: 'Reset Jalur Kabel',
     wireRemove: 'Hapus Kabel',
     serialTitle: 'Serial Monitor',
     serialClear: 'Bersihkan',
@@ -343,7 +355,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     importIno: 'Import .ino',
     inoLoadedNotice: 'Arduino .ino sketch loaded into editor.',
     canvasEmptyTitle: 'Empty Workbench',
-    canvasEmptyDesc: 'Add an Arduino board or components to start wiring, or open a saved project or template from the File menu.',
+    canvasEmptyDesc: 'Choose an Arduino board in the top-left menu, then add components to start wiring or open a template from File.',
     openFileMenu: 'Open File Menu',
     catMcu: 'Arduino Boards',
     addPart: 'Parts',
@@ -355,7 +367,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     modeWire: 'Wire',
     modeMove: 'Move',
     modeDelete: 'Delete',
-    modeAutoHint: 'Smart Mode: tap pins to wire, drag parts to move, pinch with 2 fingers to zoom.',
+    modeAutoHint: 'Smart Mode: tap pin tips to wire, tap part bodies to select/drag, pinch with 2 fingers to zoom.',
+    runningAutoHint: 'Simulation live: tap buttons/keypad to press, tap sensors to adjust values. Switch to Wire mode to add wires.',
     modeWireHint: 'Wire Mode: tap pin A then pin B (all pin anchors highlighted).',
     modeMoveHint: 'Move Mode: drag parts or pan canvas without starting wires by mistake.',
     modeDeleteHint: 'Delete Mode: tap any wire or component to remove it immediately.',
@@ -364,9 +377,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     zoomIn: 'Zoom In',
     zoomOut: 'Zoom Out',
     zoomFit: 'Fit View',
-    tidyWires: 'Tidy Wires',
-    tidyWiresHint: 'Auto-route all jumper wires cleanly around components without overlapping',
+    tidyWires: 'Tidy',
+    tidyWiresHint: 'Auto-arrange components and jumper wires cleanly with clear spacing',
+    tidyWiresOnlyHint: 'Auto-route jumper wires only (preserves your manual component positions)',
     rotate: 'Rotate 90°',
+    flipH: 'Flip H',
+    flipV: 'Flip V',
     deleteSelected: 'Delete',
     cancelWire: 'Cancel Wire',
     wiringPrompt: (pin) => `From ${pin}: tap destination pin or empty space to add a bend`,
@@ -462,6 +478,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     btEmpty: 'No data received from Arduino yet.',
     libsHeading: 'Pre-installed Arduino Libraries',
     wireColorLabel: 'Wire Color',
+    wireEditHint: 'Drag round corner handles to move bends, drag segment midpoint handles to slide or add bends, double-tap a corner to remove it.',
+    wireResetShape: 'Reset Wire Path',
     wireRemove: 'Delete Wire',
     serialTitle: 'Serial Monitor',
     serialClear: 'Clear',

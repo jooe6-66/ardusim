@@ -1,4 +1,12 @@
-import { PartInstance, PartManifest, Point, Wire, getPinWorldPosition, pinKey } from './types.js';
+import {
+  PartInstance,
+  PartManifest,
+  Point,
+  Wire,
+  getPinWorldPosition,
+  isMcuBoardType,
+  pinKey,
+} from './types.js';
 
 export type ExitDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -9,11 +17,10 @@ export interface RouteOptions {
   laneIndex?: number;
 }
 
-const STUB_LEN = 14;
+const STUB_LEN = 24;
 const GRID_STEP = 12;
 
-function applyStub(pt: Point, dir?: ExitDirection, extra = 0): Point {
-  const dist = STUB_LEN + extra;
+function applyStub(pt: Point, dir?: ExitDirection, dist = STUB_LEN): Point {
   switch (dir) {
     case 'up':
       return { x: pt.x, y: pt.y - dist };
@@ -28,7 +35,12 @@ function applyStub(pt: Point, dir?: ExitDirection, extra = 0): Point {
   }
 }
 
-function connectOrthogonal(a: Point, b: Point, preferHorizontalFirst: boolean, laneOffset: number): Point[] {
+function connectOrthogonal(
+  a: Point,
+  b: Point,
+  preferHorizontalFirst: boolean,
+  laneOffset: number
+): Point[] {
   if (Math.abs(a.x - b.x) < 0.5 || Math.abs(a.y - b.y) < 0.5) {
     return [b];
   }
@@ -89,14 +101,15 @@ export function simplifyOrthogonal(points: Point[]): Point[] {
  */
 export function routeWire(start: Point, end: Point, opts: RouteOptions = {}): Point[] {
   const lane = opts.laneIndex ?? 0;
-  const laneOffset = ((lane % 5) - 2) * 8;
+  const laneOffset = ((lane % 7) - 3) * 12;
   const hasWaypoints = (opts.waypoints?.length ?? 0) > 0;
   const points: Point[] = [start];
 
+  const stubDist = STUB_LEN + (lane % 4) * 8;
   const startStub =
-    !hasWaypoints && opts.startExit ? applyStub(start, opts.startExit, (lane % 3) * 4) : start;
+    !hasWaypoints && opts.startExit ? applyStub(start, opts.startExit, stubDist) : start;
   const endStub =
-    !hasWaypoints && opts.endExit ? applyStub(end, opts.endExit, (lane % 3) * 4) : end;
+    !hasWaypoints && opts.endExit ? applyStub(end, opts.endExit, stubDist) : end;
 
   if (startStub !== start) {
     points.push(startStub);
@@ -178,28 +191,154 @@ interface Rect {
 
 export function rotateExitDir(
   dir: ExitDirection | undefined,
-  rotation: PartInstance['rotation']
+  rotation: PartInstance['rotation'],
+  flipX?: boolean,
+  flipY?: boolean
 ): ExitDirection | undefined {
   if (!dir) return undefined;
   const order: ExitDirection[] = ['up', 'right', 'down', 'left'];
   const idx = order.indexOf(dir);
-  return order[(idx + rotation / 90) % 4];
+  let out = order[(idx + rotation / 90) % 4];
+  if (flipX) {
+    if (out === 'left') out = 'right';
+    else if (out === 'right') out = 'left';
+  }
+  if (flipY) {
+    if (out === 'up') out = 'down';
+    else if (out === 'down') out = 'up';
+  }
+  return out;
 }
 
-function getPartBodyObstacle(part: PartInstance, manifest: PartManifest): Rect {
+function getPartWorldRect(part: PartInstance, manifest: PartManifest): Rect {
   const cx = part.x + manifest.width / 2;
   const cy = part.y + manifest.height / 2;
   const rotated = part.rotation === 90 || part.rotation === 270;
   const w = rotated ? manifest.height : manifest.width;
   const h = rotated ? manifest.width : manifest.height;
-  // Inset slightly from outer pin edge so pins sit cleanly outside the forbidden core body
-  const inset = part.type === 'breadboard-half' ? 14 : 8;
   return {
-    x1: cx - w / 2 + inset,
-    y1: cy - h / 2 + inset,
-    x2: cx + w / 2 - inset,
-    y2: cy + h / 2 - inset,
+    x1: cx - w / 2,
+    y1: cy - h / 2,
+    x2: cx + w / 2,
+    y2: cy + h / 2,
   };
+}
+
+/** Computes a clean straight lead-out point well outside the owning component's bounding box. */
+function computeExitStubPoint(
+  world: Point,
+  exitDir: ExitDirection | undefined,
+  partRect: Rect,
+  partType: string
+): Point {
+  if (!exitDir) return world;
+  const clearance = isMcuBoardType(partType)
+    ? 24
+    : partType === 'breadboard-half'
+      ? 18
+      : 18;
+  let distToEdge = 0;
+  switch (exitDir) {
+    case 'up':
+      distToEdge = Math.max(0, world.y - partRect.y1);
+      break;
+    case 'down':
+      distToEdge = Math.max(0, partRect.y2 - world.y);
+      break;
+    case 'left':
+      distToEdge = Math.max(0, world.x - partRect.x1);
+      break;
+    case 'right':
+      distToEdge = Math.max(0, partRect.x2 - world.x);
+      break;
+  }
+  const dist = Math.max(20, distToEdge + clearance);
+  return applyStub(world, exitDir, dist);
+}
+
+/**
+ * Aligns the start/end legs of a grid-routed path directly onto the exact pin X or Y axis
+ * so wires exit dead-straight from every pin without tiny off-grid kinks near component bodies.
+ */
+function stitchStraightPinExits(
+  fromWorld: Point,
+  fromExit: ExitDirection | undefined,
+  fromStub: Point,
+  toWorld: Point,
+  toExit: ExitDirection | undefined,
+  toStub: Point,
+  gridWorldPts: Point[]
+): Point[] {
+  const pts = simplifyOrthogonal(gridWorldPts).map((p) => ({ x: p.x, y: p.y }));
+
+  if (pts.length >= 2) {
+    if (fromExit === 'up' || fromExit === 'down') {
+      const firstVertical = Math.abs(pts[0].x - pts[1].x) < 0.5;
+      if (firstVertical && pts.length >= 3) {
+        pts[0].x = fromWorld.x;
+        pts[1].x = fromWorld.x;
+      } else if (!firstVertical) {
+        pts[0].x = fromWorld.x;
+      }
+    } else if (fromExit === 'left' || fromExit === 'right') {
+      const firstHoriz = Math.abs(pts[0].y - pts[1].y) < 0.5;
+      if (firstHoriz && pts.length >= 3) {
+        pts[0].y = fromWorld.y;
+        pts[1].y = fromWorld.y;
+      } else if (!firstHoriz) {
+        pts[0].y = fromWorld.y;
+      }
+    }
+
+    const lastIdx = pts.length - 1;
+    if (toExit === 'up' || toExit === 'down') {
+      const lastVertical = Math.abs(pts[lastIdx].x - pts[lastIdx - 1].x) < 0.5;
+      if (lastVertical && pts.length >= 3) {
+        pts[lastIdx].x = toWorld.x;
+        pts[lastIdx - 1].x = toWorld.x;
+      } else if (!lastVertical) {
+        pts[lastIdx].x = toWorld.x;
+      }
+    } else if (toExit === 'left' || toExit === 'right') {
+      const lastHoriz = Math.abs(pts[lastIdx].y - pts[lastIdx - 1].y) < 0.5;
+      if (lastHoriz && pts.length >= 3) {
+        pts[lastIdx].y = toWorld.y;
+        pts[lastIdx - 1].y = toWorld.y;
+      } else if (!lastHoriz) {
+        pts[lastIdx].y = toWorld.y;
+      }
+    }
+  } else if (pts.length === 1) {
+    // Single-cell grid route: keep straight lead-outs through both stubs
+    pts.length = 0;
+    if (fromExit) pts.push(fromStub);
+    if (toExit) pts.push(toStub);
+  }
+
+  const rawWorld: Point[] = [fromWorld, ...pts, toWorld];
+
+  // Guarantee strict orthogonality while keeping lead-out legs dead straight along pin exit axes
+  const ortho: Point[] = [rawWorld[0]];
+  for (let i = 1; i < rawWorld.length; i++) {
+    const prev = ortho[ortho.length - 1];
+    const pt = rawWorld[i];
+    if (Math.abs(pt.x - prev.x) > 0.5 && Math.abs(pt.y - prev.y) > 0.5) {
+      if (i === 1 && (fromExit === 'up' || fromExit === 'down')) {
+        ortho.push({ x: prev.x, y: pt.y });
+      } else if (i === 1 && (fromExit === 'left' || fromExit === 'right')) {
+        ortho.push({ x: pt.x, y: prev.y });
+      } else if (i === rawWorld.length - 1 && (toExit === 'up' || toExit === 'down')) {
+        ortho.push({ x: pt.x, y: prev.y });
+      } else if (i === rawWorld.length - 1 && (toExit === 'left' || toExit === 'right')) {
+        ortho.push({ x: prev.x, y: pt.y });
+      } else {
+        ortho.push({ x: pt.x, y: prev.y });
+      }
+    }
+    ortho.push(pt);
+  }
+
+  return simplifyOrthogonal(ortho);
 }
 
 class MinHeap<T> {
@@ -248,9 +387,10 @@ class MinHeap<T> {
 }
 
 /**
- * Re-routes all jumper wires around component bodies with channel separation so wires
- * never cross over boards/displays or stack on top of each other.
- * ponytail: dense 12px grid A* bounded to circuit extents + 120px margin; handles up to ~100 wires in <50ms.
+ * Re-routes all jumper wires around component bodies with board clearance halos,
+ * straight pin lead-outs, and wire-to-wire channel separation so parallel wires
+ * stay spaced apart and never hug boards or stack on top of each other.
+ * ponytail: dense 12px grid A* bounded to circuit extents + 180px margin; handles up to ~100 wires in <60ms.
  */
 export function autoTidyWires(
   parts: PartInstance[],
@@ -259,82 +399,120 @@ export function autoTidyWires(
 ): Wire[] {
   if (wires.length === 0) return wires;
 
-  // Build world pin lookup and circuit bounding box
-  const pinPos = new Map<string, { world: Point; exitDir?: ExitDirection }>();
+  interface PinMeta {
+    partId: string;
+    partType: string;
+    partRect: Rect;
+    world: Point;
+    exitDir?: ExitDirection;
+  }
+
+  const pinPos = new Map<string, PinMeta>();
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  const obstacles: Rect[] = [];
+  const partObstacles: Array<{ rect: Rect; isMcu: boolean }> = [];
+  const breadboards: Array<{ partId: string; rect: Rect }> = [];
 
   for (const part of parts) {
     const manifest = manifests.get(part.type);
     if (!manifest) continue;
-    minX = Math.min(minX, part.x);
-    minY = Math.min(minY, part.y);
-    maxX = Math.max(maxX, part.x + manifest.width);
-    maxY = Math.max(maxY, part.y + manifest.height);
-    if (part.type !== 'breadboard-half') {
-      obstacles.push(getPartBodyObstacle(part, manifest));
+    const rect = getPartWorldRect(part, manifest);
+    minX = Math.min(minX, rect.x1);
+    minY = Math.min(minY, rect.y1);
+    maxX = Math.max(maxX, rect.x2);
+    maxY = Math.max(maxY, rect.y2);
+
+    if (part.type === 'breadboard-half') {
+      breadboards.push({ partId: part.id, rect });
+    } else {
+      partObstacles.push({ rect, isMcu: isMcuBoardType(part.type) });
     }
+
     for (const pin of manifest.pins) {
       pinPos.set(`${part.id}:${pin.id}`, {
+        partId: part.id,
+        partType: part.type,
+        partRect: rect,
         world: getPinWorldPosition(part, manifest, pin),
-        exitDir: rotateExitDir(pin.exitDir, part.rotation),
+        exitDir: rotateExitDir(pin.exitDir, part.rotation, part.flipX, part.flipY),
       });
     }
   }
 
   if (!Number.isFinite(minX)) return wires;
 
-  const margin = 120;
+  const margin = 180;
   const gxMin = Math.floor((minX - margin) / GRID_STEP);
   const gyMin = Math.floor((minY - margin) / GRID_STEP);
   const gxMax = Math.ceil((maxX + margin) / GRID_STEP);
   const gyMax = Math.ceil((maxY + margin) / GRID_STEP);
-  const cols = Math.max(10, gxMax - gxMin + 1);
-  const rows = Math.max(10, gyMax - gyMin + 1);
+  const cols = Math.max(12, gxMax - gxMin + 1);
+  const rows = Math.max(12, gyMax - gyMin + 1);
 
-  // Bail cleanly if circuit spans an absurd coordinate space
-  if (cols * rows > 40_000) {
+  if (cols * rows > 65_000) {
     return wires.map((w) => ({ ...w, waypoints: undefined }));
   }
 
-  // Mark static obstacle cost per grid cell
+  const toGrid = (pt: Point): { gx: number; gy: number } => ({
+    gx: Math.min(cols - 1, Math.max(0, Math.round(pt.x / GRID_STEP) - gxMin)),
+    gy: Math.min(rows - 1, Math.max(0, Math.round(pt.y / GRID_STEP) - gyMin)),
+  });
+
+  // Static obstacle & clearance halo cost per grid cell
   const cellCost = new Float32Array(cols * rows);
   cellCost.fill(1);
   for (let gy = 0; gy < rows; gy++) {
     const wy = (gy + gyMin) * GRID_STEP;
     for (let gx = 0; gx < cols; gx++) {
       const wx = (gx + gxMin) * GRID_STEP;
-      for (const ob of obstacles) {
-        if (wx >= ob.x1 && wx <= ob.x2 && wy >= ob.y1 && wy <= ob.y2) {
-          cellCost[gy * cols + gx] = 65; // Strong avoidance without making trapped pins impossible
+      let cost = 1;
+      for (const ob of partObstacles) {
+        const { x1, y1, x2, y2 } = ob.rect;
+        const dx = wx < x1 ? x1 - wx : wx > x2 ? wx - x2 : 0;
+        const dy = wy < y1 ? y1 - wy : wy > y2 ? wy - y2 : 0;
+        if (dx === 0 && dy === 0) {
+          cost = Math.max(cost, 260);
           break;
         }
+        const dist = Math.max(dx, dy);
+        if (dist <= GRID_STEP) {
+          // 12px clearance ring around every board/component
+          cost = Math.max(cost, ob.isMcu ? 38 : 28);
+        } else if (dist <= GRID_STEP * 2) {
+          // 24px secondary buffer so buses prefer clean outer channels
+          cost = Math.max(cost, ob.isMcu ? 12 : 6);
+        }
       }
+      cellCost[gy * cols + gx] = cost;
     }
   }
 
-  // Track occupied grid segments (horizontal/vertical lanes) so parallel wires separate cleanly
+  // Discourage routing unrelated wires directly over other components' pin pads
+  const pinPadCell = new Uint8Array(cols * rows);
+  for (const meta of pinPos.values()) {
+    if (meta.partType === 'breadboard-half') continue;
+    const g = toGrid(meta.world);
+    pinPadCell[g.gy * cols + g.gx] = 1;
+  }
+
+  // Track exact wire tracks (usedCellH/V) AND 1-cell parallel neighbor buffers (nearLaneH/V)
   const usedCellH = new Uint16Array(cols * rows);
   const usedCellV = new Uint16Array(cols * rows);
+  const nearLaneH = new Uint16Array(cols * rows);
+  const nearLaneV = new Uint16Array(cols * rows);
 
-  // Route shorter wires first so long power/ground buses wrap cleanly around the outside
+  // Route shorter local connections first so longer power/signal buses wrap cleanly around the outside
   const indexedWires = wires.map((wire, origIdx) => {
     const a = pinPos.get(pinKey(wire.from));
     const b = pinPos.get(pinKey(wire.to));
     const dist = a && b ? Math.abs(a.world.x - b.world.x) + Math.abs(a.world.y - b.world.y) : 0;
     return { wire, origIdx, dist };
   });
-  indexedWires.sort((a, b) => a.dist - b.dist);
+  indexedWires.sort((a, b) => a.dist - b.dist || a.origIdx - b.origIdx);
 
   const routedWaypoints = new Map<string, Point[]>();
-
-  const toGrid = (pt: Point): { gx: number; gy: number } => ({
-    gx: Math.min(cols - 1, Math.max(0, Math.round(pt.x / GRID_STEP) - gxMin)),
-    gy: Math.min(rows - 1, Math.max(0, Math.round(pt.y / GRID_STEP) - gyMin)),
-  });
 
   const dirs = [
     { dx: 1, dy: 0, horiz: true },
@@ -348,14 +526,22 @@ export function autoTidyWires(
     const toInfo = pinPos.get(pinKey(wire.to));
     if (!fromInfo || !toInfo) continue;
 
-    // Step 1 grid cell outward along each pin's natural exit direction so wires never dive back through their own board
-    const startPt = fromInfo.exitDir ? applyStub(fromInfo.world, fromInfo.exitDir, 0) : fromInfo.world;
-    const endPt = toInfo.exitDir ? applyStub(toInfo.world, toInfo.exitDir, 0) : toInfo.world;
+    const startPt = computeExitStubPoint(
+      fromInfo.world,
+      fromInfo.exitDir,
+      fromInfo.partRect,
+      fromInfo.partType
+    );
+    const endPt = computeExitStubPoint(
+      toInfo.world,
+      toInfo.exitDir,
+      toInfo.partRect,
+      toInfo.partType
+    );
 
     const sg = toGrid(startPt);
     const eg = toGrid(endPt);
 
-    // State index encodes (cellIndex * 2 + orientation) so turn penalties stay exact
     const totalStates = cols * rows * 2;
     const gScore = new Float32Array(totalStates);
     gScore.fill(Infinity);
@@ -365,17 +551,24 @@ export function autoTidyWires(
     const open = new MinHeap<number>();
     const startCell = sg.gy * cols + sg.gx;
     const endCell = eg.gy * cols + eg.gx;
+    const startPreferredOrient =
+      fromInfo.exitDir === 'left' || fromInfo.exitDir === 'right'
+        ? 0
+        : fromInfo.exitDir === 'up' || fromInfo.exitDir === 'down'
+          ? 1
+          : -1;
 
     const hInit = Math.abs(sg.gx - eg.gx) + Math.abs(sg.gy - eg.gy);
     for (let orient = 0; orient < 2; orient++) {
       const st = startCell * 2 + orient;
-      gScore[st] = 0;
-      open.push(st, hInit);
+      const initCost = startPreferredOrient >= 0 && orient !== startPreferredOrient ? 4.5 : 0;
+      gScore[st] = initCost;
+      open.push(st, initCost + hInit);
     }
 
     let foundState = -1;
     let expanded = 0;
-    const maxExpand = 14_000;
+    const maxExpand = 22_000;
 
     while (open.size > 0 && expanded < maxExpand) {
       const curr = open.pop()!;
@@ -398,12 +591,29 @@ export function autoTidyWires(
         const nOrient = d.horiz ? 0 : 1;
         const nState = nCell * 2 + nOrient;
 
-        const base = nCell === endCell ? 1 : cellCost[nCell];
-        const turnPenalty = nOrient !== prevOrient ? 2.4 : 0;
-        const sameLanePenalty = (d.horiz ? usedCellH[nCell] : usedCellV[nCell]) * 9;
-        const crossPenalty = (d.horiz ? usedCellV[nCell] : usedCellH[nCell]) * 1.5;
+        let base = nCell === endCell ? 1 : cellCost[nCell];
+        if (nCell !== endCell && breadboards.length > 0) {
+          const wx = (nx + gxMin) * GRID_STEP;
+          const wy = (ny + gyMin) * GRID_STEP;
+          for (const bb of breadboards) {
+            if (bb.partId === fromInfo.partId || bb.partId === toInfo.partId) continue;
+            if (wx >= bb.rect.x1 && wx <= bb.rect.x2 && wy >= bb.rect.y1 && wy <= bb.rect.y2) {
+              base += 48;
+              break;
+            }
+          }
+        }
+        if (nCell !== endCell && pinPadCell[nCell]) {
+          base += 35;
+        }
 
-        const tentativeG = currG + base + turnPenalty + sameLanePenalty + crossPenalty;
+        const turnPenalty = nOrient !== prevOrient ? 3.5 : 0;
+        const sameLanePenalty = (d.horiz ? usedCellH[nCell] : usedCellV[nCell]) * 60;
+        const nearParallelPenalty = (d.horiz ? nearLaneH[nCell] : nearLaneV[nCell]) * 14;
+        const crossPenalty = (d.horiz ? usedCellV[nCell] : usedCellH[nCell]) * 4;
+
+        const tentativeG =
+          currG + base + turnPenalty + sameLanePenalty + nearParallelPenalty + crossPenalty;
         if (tentativeG < gScore[nState]) {
           gScore[nState] = tentativeG;
           cameFrom[nState] = curr;
@@ -415,50 +625,52 @@ export function autoTidyWires(
 
     if (foundState < 0) continue;
 
-    // Reconstruct path in grid coordinates & record occupied horizontal/vertical channels
-    const gridPath: Array<{ gx: number; gy: number }> = [];
+    // Reconstruct path in grid coordinates & mark occupied lanes + 1-cell parallel clearance buffers
+    const gridPath: Array<{ gx: number; gy: number; orient: number }> = [];
     let s = foundState;
     while (s >= 0) {
       const cell = s >> 1;
       const orient = s & 1;
       const gx = cell % cols;
       const gy = (cell - gx) / cols;
-      gridPath.push({ gx, gy });
-      if (orient === 0) usedCellH[cell]++;
-      else usedCellV[cell]++;
+      gridPath.push({ gx, gy, orient });
       s = cameFrom[s];
     }
     gridPath.reverse();
 
-    // Convert to world coordinates, attach true pin endpoints, simplify collinear bends, and extract inner waypoints
-    const rawWorld: Point[] = [fromInfo.world];
-    if (fromInfo.exitDir) rawWorld.push(startPt);
-    for (const gp of gridPath) {
-      rawWorld.push({ x: (gp.gx + gxMin) * GRID_STEP, y: (gp.gy + gyMin) * GRID_STEP });
-    }
-    if (toInfo.exitDir) rawWorld.push(endPt);
-    rawWorld.push(toInfo.world);
-
-    // Ensure every transition is strictly orthogonal before simplifying
-    const ortho: Point[] = [rawWorld[0]];
-    for (let i = 1; i < rawWorld.length; i++) {
-      const prev = ortho[ortho.length - 1];
-      const pt = rawWorld[i];
-      if (Math.abs(pt.x - prev.x) > 0.5 && Math.abs(pt.y - prev.y) > 0.5) {
-        // Align corner cleanly along exit direction for start/end pins
-        if (i === 1 && (fromInfo.exitDir === 'up' || fromInfo.exitDir === 'down')) {
-          ortho.push({ x: prev.x, y: pt.y });
-        } else if (i === rawWorld.length - 1 && (toInfo.exitDir === 'up' || toInfo.exitDir === 'down')) {
-          ortho.push({ x: pt.x, y: prev.y });
-        } else {
-          ortho.push({ x: pt.x, y: prev.y });
-        }
+    for (let i = 1; i < gridPath.length; i++) {
+      const prev = gridPath[i - 1];
+      const curr = gridPath[i];
+      const isHoriz = curr.gy === prev.gy;
+      const cell = curr.gy * cols + curr.gx;
+      const prevCell = prev.gy * cols + prev.gx;
+      if (isHoriz) {
+        usedCellH[cell]++;
+        usedCellH[prevCell]++;
+        if (curr.gy > 0) nearLaneH[(curr.gy - 1) * cols + curr.gx]++;
+        if (curr.gy + 1 < rows) nearLaneH[(curr.gy + 1) * cols + curr.gx]++;
+      } else {
+        usedCellV[cell]++;
+        usedCellV[prevCell]++;
+        if (curr.gx > 0) nearLaneV[curr.gy * cols + (curr.gx - 1)]++;
+        if (curr.gx + 1 < cols) nearLaneV[curr.gy * cols + (curr.gx + 1)]++;
       }
-      ortho.push(pt);
     }
 
-    const simplified = simplifyOrthogonal(ortho);
-    // Keep only intermediate points between start pin and end pin as wire.waypoints
+    const gridWorldPts = gridPath.map((gp) => ({
+      x: (gp.gx + gxMin) * GRID_STEP,
+      y: (gp.gy + gyMin) * GRID_STEP,
+    }));
+
+    const simplified = stitchStraightPinExits(
+      fromInfo.world,
+      fromInfo.exitDir,
+      startPt,
+      toInfo.world,
+      toInfo.exitDir,
+      endPt,
+      gridWorldPts
+    );
     const inner = simplified.slice(1, -1);
     routedWaypoints.set(wire.id, inner);
   }
@@ -467,4 +679,528 @@ export function autoTidyWires(
     const wp = routedWaypoints.get(w.id);
     return wp ? { ...w, waypoints: wp.length > 0 ? wp : undefined } : w;
   });
+}
+
+// --- Smart Component Auto-Layout + Wire Auto-Tidy ---
+
+function snapGrid(v: number): number {
+  return Math.round(v / GRID_STEP) * GRID_STEP;
+}
+
+function getEffectiveSize(part: PartInstance, manifest: PartManifest): { w: number; h: number } {
+  const rotated = part.rotation === 90 || part.rotation === 270;
+  return {
+    w: rotated ? manifest.height : manifest.width,
+    h: rotated ? manifest.width : manifest.height,
+  };
+}
+
+/** Positions a part so its rotated visual bounding box starts at (boxX, boxY) snapped to the 12px grid. */
+function placeAtVisualBox(
+  part: PartInstance,
+  manifest: PartManifest,
+  boxX: number,
+  boxY: number
+): PartInstance {
+  const { w, h } = getEffectiveSize(part, manifest);
+  return {
+    ...part,
+    x: snapGrid(boxX + (w - manifest.width) / 2),
+    y: snapGrid(boxY + (h - manifest.height) / 2),
+  };
+}
+
+interface LayoutRowSpec {
+  chains: PartInstance[][];
+  width: number;
+  height: number;
+}
+
+const CATEGORY_ORDER: Record<PartManifest['category'], number> = {
+  mcu: 0,
+  breadboard: 1,
+  sensor: 2,
+  display: 3,
+  input: 4,
+  passive: 5,
+  output: 6,
+  motor: 7,
+};
+
+const TOP_ZONE_CATEGORIES = new Set<PartManifest['category']>(['sensor', 'display']);
+
+/**
+ * Groups directly wired non-MCU/non-breadboard peripherals into ordered left-to-right chains
+ * (for example diode -> resistor -> led or ldr -> resistor) so signal flow stays linear.
+ */
+function buildPeripheralChains(
+  peripherals: PartInstance[],
+  wires: Wire[],
+  mcuId: string | null,
+  manifests: Map<string, PartManifest>
+): PartInstance[][] {
+  const partById = new Map(peripherals.map((p) => [p.id, p]));
+  const adj = new Map<string, Set<string>>();
+  const mcuConnected = new Set<string>();
+
+  for (const p of peripherals) adj.set(p.id, new Set());
+  for (const w of wires) {
+    const a = w.from.partId;
+    const b = w.to.partId;
+    if (a === mcuId && partById.has(b)) mcuConnected.add(b);
+    if (b === mcuId && partById.has(a)) mcuConnected.add(a);
+    if (a !== b && partById.has(a) && partById.has(b)) {
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
+    }
+  }
+
+  const visited = new Set<string>();
+  const chains: PartInstance[][] = [];
+
+  for (const p of peripherals) {
+    if (visited.has(p.id)) continue;
+    // BFS connected component of directly linked peripherals
+    const compIds: string[] = [];
+    const queue = [p.id];
+    visited.add(p.id);
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      compIds.push(curr);
+      for (const nb of adj.get(curr) ?? []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+
+    // Order chain: start from an MCU-connected endpoint (preferring passive/sensor/input before output)
+    if (compIds.length > 1) {
+      const startId =
+        compIds
+          .slice()
+          .sort((a, b) => {
+            const aMcu = mcuConnected.has(a) ? 0 : 1;
+            const bMcu = mcuConnected.has(b) ? 0 : 1;
+            if (aMcu !== bMcu) return aMcu - bMcu;
+            const aDeg = adj.get(a)!.size;
+            const bDeg = adj.get(b)!.size;
+            if (aDeg !== bDeg) return aDeg - bDeg;
+            const aCat = CATEGORY_ORDER[manifests.get(partById.get(a)!.type)?.category ?? 'output'];
+            const bCat = CATEGORY_ORDER[manifests.get(partById.get(b)!.type)?.category ?? 'output'];
+            return aCat - bCat;
+          })[0] ?? compIds[0];
+
+      const ordered: PartInstance[] = [];
+      const seen = new Set<string>([startId]);
+      const walk = [startId];
+      while (walk.length > 0) {
+        const curr = walk.shift()!;
+        ordered.push(partById.get(curr)!);
+        const nexts = Array.from(adj.get(curr) ?? [])
+          .filter((n) => !seen.has(n))
+          .sort((a, b) => {
+            const aCat = CATEGORY_ORDER[manifests.get(partById.get(a)!.type)?.category ?? 'output'];
+            const bCat = CATEGORY_ORDER[manifests.get(partById.get(b)!.type)?.category ?? 'output'];
+            return aCat - bCat;
+          });
+        for (const n of nexts) {
+          seen.add(n);
+          walk.push(n);
+        }
+      }
+      chains.push(ordered);
+    } else {
+      chains.push([partById.get(compIds[0])!]);
+    }
+  }
+
+  return chains;
+}
+
+function packChainsIntoRows(
+  chains: PartInstance[][],
+  manifests: Map<string, PartManifest>,
+  maxRowWidth: number,
+  itemGapX: number,
+  chainGapX: number
+): LayoutRowSpec[] {
+  const rows: LayoutRowSpec[] = [];
+  let currentChains: PartInstance[][] = [];
+  let currentW = 0;
+  let currentH = 0;
+
+  const flush = () => {
+    if (currentChains.length === 0) return;
+    rows.push({ chains: currentChains, width: currentW, height: currentH });
+    currentChains = [];
+    currentW = 0;
+    currentH = 0;
+  };
+
+  for (const chain of chains) {
+    let chainW = 0;
+    let chainH = 0;
+    for (let i = 0; i < chain.length; i++) {
+      const m = manifests.get(chain[i].type);
+      if (!m) continue;
+      const { w, h } = getEffectiveSize(chain[i], m);
+      chainW += w + (i > 0 ? chainGapX : 0);
+      chainH = Math.max(chainH, h);
+    }
+
+    const addedW = currentChains.length > 0 ? itemGapX + chainW : chainW;
+    if (currentChains.length > 0 && currentW + addedW > maxRowWidth) {
+      flush();
+    }
+
+    if (currentChains.length > 0) currentW += itemGapX;
+    currentChains.push(chain);
+    currentW += chainW;
+    currentH = Math.max(currentH, chainH);
+  }
+  flush();
+  return rows;
+}
+
+function placeRowsAt(
+  rows: LayoutRowSpec[],
+  startX: number,
+  startY: number,
+  rowGapY: number,
+  itemGapX: number,
+  chainGapX: number,
+  manifests: Map<string, PartManifest>,
+  out: Map<string, PartInstance>
+): { bottomY: number; maxRightX: number } {
+  let y = snapGrid(startY);
+  let maxRightX = startX;
+
+  for (const row of rows) {
+    let x = snapGrid(startX);
+    row.chains.forEach((chain, ci) => {
+      if (ci > 0) x = snapGrid(x + itemGapX);
+      chain.forEach((part, pi) => {
+        const m = manifests.get(part.type);
+        if (!m) return;
+        if (pi > 0) x = snapGrid(x + chainGapX);
+        const { w, h } = getEffectiveSize(part, m);
+        // Vertically center shorter items (like resistors) against taller row neighbors (like LEDs)
+        const centeredY = snapGrid(y + (row.height - h) / 2);
+        out.set(part.id, placeAtVisualBox(part, m, x, centeredY));
+        x = snapGrid(x + w);
+        maxRightX = Math.max(maxRightX, x);
+      });
+    });
+    y = snapGrid(y + row.height + rowGapY);
+  }
+
+  return {
+    bottomY: rows.length > 0 ? y - rowGapY : startY,
+    maxRightX,
+  };
+}
+
+/**
+ * Arranges both component placement and jumper wire routing cleanly:
+ * - Resolves overlapping parts into well-spaced functional/pin-affinity zones
+ * - Preserves part rotations and flips while keeping 60-96px wiring corridors
+ * - Runs obstacle-aware orthogonal wire routing with channel separation
+ */
+export function autoTidyCircuit(
+  parts: PartInstance[],
+  wires: Wire[],
+  manifests: Map<string, PartManifest>
+): { parts: PartInstance[]; wires: Wire[] } {
+  if (parts.length === 0) return { parts, wires };
+
+  const ITEM_GAP_X = 60;
+  const CHAIN_GAP_X = 48;
+  const ROW_GAP_Y = 72;
+  const ZONE_GAP_X = 96;
+  const ZONE_GAP_Y = 72;
+  const ORIGIN_X = 48;
+  const ORIGIN_Y = 36;
+
+  const mcuPart = parts.find((p) => isMcuBoardType(p.type)) ?? null;
+  const mcuManifest = mcuPart ? manifests.get(mcuPart.type) : undefined;
+  const breadboards = parts.filter((p) => p.type === 'breadboard-half');
+  const peripherals = parts.filter((p) => p !== mcuPart && p.type !== 'breadboard-half');
+
+  const placed = new Map<string, PartInstance>();
+
+  // Compute each peripheral's vertical/horizontal affinity to the MCU board's pins
+  const pinAffinity = new Map<string, { sumY: number; sumX: number; count: number }>();
+  if (mcuPart && mcuManifest) {
+    const refMcu: PartInstance = { ...mcuPart, x: 0, y: 0 };
+    const mcuPinPos = new Map<string, Point>();
+    for (const pin of mcuManifest.pins) {
+      mcuPinPos.set(pin.id, getPinWorldPosition(refMcu, mcuManifest, pin));
+    }
+    const addHit = (partId: string, pinId: string) => {
+      const pt = mcuPinPos.get(pinId);
+      if (!pt) return;
+      const cur = pinAffinity.get(partId) ?? { sumY: 0, sumX: 0, count: 0 };
+      cur.sumY += pt.y;
+      cur.sumX += pt.x;
+      cur.count += 1;
+      pinAffinity.set(partId, cur);
+    };
+    for (const w of wires) {
+      if (w.from.partId === mcuPart.id && w.to.partId !== mcuPart.id) {
+        addHit(w.to.partId, w.from.pinId);
+      } else if (w.to.partId === mcuPart.id && w.from.partId !== mcuPart.id) {
+        addHit(w.from.partId, w.to.pinId);
+      }
+    }
+  }
+
+  const chains = buildPeripheralChains(peripherals, wires, mcuPart?.id ?? null, manifests);
+
+  const chainScore = (chain: PartInstance[]) => {
+    let sumY = 0;
+    let sumX = 0;
+    let count = 0;
+    for (const p of chain) {
+      const a = pinAffinity.get(p.id);
+      if (a) {
+        sumY += a.sumY;
+        sumX += a.sumX;
+        count += a.count;
+      }
+    }
+    const firstCat = CATEGORY_ORDER[manifests.get(chain[0].type)?.category ?? 'output'];
+    return {
+      hasAffinity: count > 0,
+      avgY: count > 0 ? sumY / count : 0,
+      avgX: count > 0 ? sumX / count : 0,
+      firstCat,
+    };
+  };
+
+  if (breadboards.length > 0) {
+    // Breadboard-centric layout: Top sensors/displays -> Middle breadboard -> Bottom MCU + outputs
+    const topChains: PartInstance[][] = [];
+    const bottomChains: PartInstance[][] = [];
+
+    for (const chain of chains) {
+      const primaryCat = manifests.get(chain[0].type)?.category ?? 'output';
+      if (TOP_ZONE_CATEGORIES.has(primaryCat)) {
+        topChains.push(chain);
+      } else {
+        bottomChains.push(chain);
+      }
+    }
+    topChains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
+    bottomChains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
+
+    let cursorY = ORIGIN_Y;
+    if (topChains.length > 0) {
+      const topRows = packChainsIntoRows(topChains, manifests, 560, ITEM_GAP_X, CHAIN_GAP_X);
+      const res = placeRowsAt(topRows, ORIGIN_X, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+      cursorY = snapGrid(res.bottomY + ZONE_GAP_Y);
+    }
+
+    // Place breadboard(s) cleanly across the middle row
+    let bbX = ORIGIN_X;
+    let bbMaxH = 0;
+    for (const bb of breadboards) {
+      const bm = manifests.get(bb.type);
+      if (!bm) continue;
+      const { w, h } = getEffectiveSize(bb, bm);
+      placed.set(bb.id, placeAtVisualBox(bb, bm, bbX, cursorY));
+      bbX = snapGrid(bbX + w + ITEM_GAP_X);
+      bbMaxH = Math.max(bbMaxH, h);
+    }
+    cursorY = snapGrid(cursorY + bbMaxH + ZONE_GAP_Y);
+
+    // Place MCU at bottom-left, outputs/inputs to its right
+    let bottomStartX = ORIGIN_X;
+    if (mcuPart && mcuManifest) {
+      const { w } = getEffectiveSize(mcuPart, mcuManifest);
+      placed.set(mcuPart.id, placeAtVisualBox(mcuPart, mcuManifest, ORIGIN_X, cursorY));
+      bottomStartX = snapGrid(ORIGIN_X + w + ZONE_GAP_X);
+    }
+
+    if (bottomChains.length > 0) {
+      const bottomRows = packChainsIntoRows(bottomChains, manifests, 480, ITEM_GAP_X, CHAIN_GAP_X);
+      placeRowsAt(bottomRows, bottomStartX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+    }
+  } else if (mcuPart && mcuManifest) {
+    // MCU-left layout: MCU anchored left; peripherals grouped into top/bottom bands by MCU pin affinity
+    const mcuSize = getEffectiveSize(mcuPart, mcuManifest);
+    const mcuMidY = mcuManifest.height / 2;
+
+    const topChains: PartInstance[][] = [];
+    const bottomChains: PartInstance[][] = [];
+    const neutralChains: PartInstance[][] = [];
+
+    for (const chain of chains) {
+      const sc = chainScore(chain);
+      if (sc.hasAffinity) {
+        if (sc.avgY <= mcuMidY) topChains.push(chain);
+        else bottomChains.push(chain);
+      } else {
+        neutralChains.push(chain);
+      }
+    }
+
+    // Sort top/bottom chains by pin X (pins closer to right side of MCU placed closer to MCU)
+    topChains.sort((a, b) => chainScore(b).avgX - chainScore(a).avgX);
+    bottomChains.sort((a, b) => chainScore(b).avgX - chainScore(a).avgX);
+    neutralChains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
+
+    for (const chain of neutralChains) {
+      if (topChains.length <= bottomChains.length) topChains.push(chain);
+      else bottomChains.push(chain);
+    }
+
+    const rightX = snapGrid(ORIGIN_X + mcuSize.w + ZONE_GAP_X);
+    const maxRowW = 500;
+    const topRows = packChainsIntoRows(topChains, manifests, maxRowW, ITEM_GAP_X, CHAIN_GAP_X);
+    const bottomRows = packChainsIntoRows(bottomChains, manifests, maxRowW, ITEM_GAP_X, CHAIN_GAP_X);
+
+    let cursorY = ORIGIN_Y;
+    const topRes = placeRowsAt(topRows, rightX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+    if (topRows.length > 0 && bottomRows.length > 0) {
+      cursorY = snapGrid(topRes.bottomY + ZONE_GAP_Y);
+    } else if (topRows.length > 0) {
+      cursorY = topRes.bottomY;
+    }
+
+    const bottomRes = placeRowsAt(bottomRows, rightX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+    const totalRightBottom = Math.max(topRes.bottomY, bottomRes.bottomY);
+    const totalRightH = Math.max(mcuSize.h, totalRightBottom - ORIGIN_Y);
+    const mcuY = Math.max(ORIGIN_Y, snapGrid(ORIGIN_Y + (totalRightH - mcuSize.h) / 2));
+
+    placed.set(mcuPart.id, placeAtVisualBox(mcuPart, mcuManifest, ORIGIN_X, mcuY));
+  } else {
+    // No MCU and no breadboard: tidy grid layout
+    chains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
+    const rows = packChainsIntoRows(chains, manifests, 560, ITEM_GAP_X, CHAIN_GAP_X);
+    placeRowsAt(rows, ORIGIN_X, ORIGIN_Y, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+  }
+
+  const nextParts = parts.map((p) => placed.get(p.id) ?? p);
+  const nextWires = autoTidyWires(nextParts, wires, manifests);
+  return { parts: nextParts, wires: nextWires };
+}
+
+// --- Manual Wire Reshaping Helpers (Orthogonal Corner Drag & Segment Slide) ---
+
+/**
+ * Moves an interior corner (`cornerIdx` in `1..pts.length-2`) of an orthogonal wire polyline
+ * to `(nx, ny)` while rubber-banding adjacent interior corners to preserve orthogonality.
+ * Returns the updated intermediate waypoints (excluding fixed start/end pins).
+ */
+export function moveWireCorner(pts: Point[], cornerIdx: number, nx: number, ny: number): Point[] {
+  if (cornerIdx <= 0 || cornerIdx >= pts.length - 1) return pts.slice(1, -1);
+  const next = pts.map((p) => ({ x: p.x, y: p.y }));
+  const prevIdx = cornerIdx - 1;
+  const nextIdx = cornerIdx + 1;
+  const prevHoriz = Math.abs(pts[prevIdx].y - pts[cornerIdx].y) < 0.5;
+  const prevVert = Math.abs(pts[prevIdx].x - pts[cornerIdx].x) < 0.5;
+  const nextHoriz = Math.abs(pts[nextIdx].y - pts[cornerIdx].y) < 0.5;
+  const nextVert = Math.abs(pts[nextIdx].x - pts[cornerIdx].x) < 0.5;
+
+  next[cornerIdx] = { x: nx, y: ny };
+  if (prevIdx > 0) {
+    if (prevHoriz) next[prevIdx].y = ny;
+    else if (prevVert) next[prevIdx].x = nx;
+  }
+  if (nextIdx < pts.length - 1) {
+    if (nextHoriz) next[nextIdx].y = ny;
+    else if (nextVert) next[nextIdx].x = nx;
+  }
+
+  // Keep pin lead-in/lead-out strictly orthogonal if corner next to a fixed pin was dragged sideways
+  if (nextIdx === pts.length - 1) {
+    const endPin = pts[nextIdx];
+    if (nextVert && Math.abs(nx - endPin.x) > 0.5) {
+      const midY = snapGrid((ny + endPin.y) / 2);
+      next.splice(nextIdx, 0, { x: nx, y: midY }, { x: endPin.x, y: midY });
+    } else if (nextHoriz && Math.abs(ny - endPin.y) > 0.5) {
+      const midX = snapGrid((nx + endPin.x) / 2);
+      next.splice(nextIdx, 0, { x: midX, y: ny }, { x: midX, y: endPin.y });
+    }
+  }
+  if (prevIdx === 0) {
+    const startPin = pts[0];
+    if (prevVert && Math.abs(nx - startPin.x) > 0.5) {
+      const midY = snapGrid((startPin.y + ny) / 2);
+      next.splice(1, 0, { x: startPin.x, y: midY }, { x: nx, y: midY });
+    } else if (prevHoriz && Math.abs(ny - startPin.y) > 0.5) {
+      const midX = snapGrid((startPin.x + nx) / 2);
+      next.splice(1, 0, { x: midX, y: startPin.y }, { x: midX, y: ny });
+    }
+  }
+
+  return simplifyOrthogonal(next).slice(1, -1);
+}
+
+/**
+ * Slides segment `pts[segIdx] -> pts[segIdx + 1]` perpendicular to its direction to `(nx, ny)`,
+ * or inserts clean orthogonal bends when an endpoint is pinned to a component.
+ * Returns the updated intermediate waypoints (excluding fixed start/end pins).
+ */
+export function moveWireSegment(pts: Point[], segIdx: number, nx: number, ny: number): Point[] {
+  if (segIdx < 0 || segIdx >= pts.length - 1) return pts.slice(1, -1);
+  const a = pts[segIdx];
+  const b = pts[segIdx + 1];
+  const isHoriz = Math.abs(a.y - b.y) < 0.5;
+  const aPinned = segIdx === 0;
+  const bPinned = segIdx + 1 === pts.length - 1;
+  const next = pts.map((p) => ({ x: p.x, y: p.y }));
+
+  if (!aPinned && !bPinned) {
+    if (isHoriz) {
+      next[segIdx].y = ny;
+      next[segIdx + 1].y = ny;
+    } else {
+      next[segIdx].x = nx;
+      next[segIdx + 1].x = nx;
+    }
+    return simplifyOrthogonal(next).slice(1, -1);
+  }
+
+  if (aPinned && !bPinned) {
+    if (isHoriz) {
+      const splitX = Math.abs(nx - a.x) >= GRID_STEP ? nx : snapGrid((a.x + b.x) / 2);
+      next[segIdx + 1].y = ny;
+      next.splice(segIdx + 1, 0, { x: splitX, y: a.y }, { x: splitX, y: ny });
+    } else {
+      const splitY = Math.abs(ny - a.y) >= GRID_STEP ? ny : snapGrid((a.y + b.y) / 2);
+      next[segIdx + 1].x = nx;
+      next.splice(segIdx + 1, 0, { x: a.x, y: splitY }, { x: nx, y: splitY });
+    }
+    return simplifyOrthogonal(next).slice(1, -1);
+  }
+
+  if (!aPinned && bPinned) {
+    if (isHoriz) {
+      const splitX = Math.abs(nx - b.x) >= GRID_STEP ? nx : snapGrid((a.x + b.x) / 2);
+      next[segIdx].y = ny;
+      next.splice(segIdx + 1, 0, { x: splitX, y: ny }, { x: splitX, y: b.y });
+    } else {
+      const splitY = Math.abs(ny - b.y) >= GRID_STEP ? ny : snapGrid((a.y + b.y) / 2);
+      next[segIdx].x = nx;
+      next.splice(segIdx + 1, 0, { x: nx, y: splitY }, { x: b.x, y: splitY });
+    }
+    return simplifyOrthogonal(next).slice(1, -1);
+  }
+
+  // Both endpoints are fixed pins (2-point straight wire): insert a clean orthogonal U-jog
+  if (isHoriz) {
+    const span = b.x - a.x;
+    const x1 = snapGrid(a.x + span * 0.25);
+    const x2 = snapGrid(a.x + span * 0.75);
+    next.splice(1, 0, { x: x1, y: a.y }, { x: x1, y: ny }, { x: x2, y: ny }, { x: x2, y: b.y });
+  } else {
+    const span = b.y - a.y;
+    const y1 = snapGrid(a.y + span * 0.25);
+    const y2 = snapGrid(a.y + span * 0.75);
+    next.splice(1, 0, { x: a.x, y: y1 }, { x: nx, y: y1 }, { x: nx, y: y2 }, { x: b.x, y: y2 });
+  }
+  return simplifyOrthogonal(next).slice(1, -1);
 }

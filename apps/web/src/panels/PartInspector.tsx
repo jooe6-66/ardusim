@@ -69,8 +69,10 @@ interface PartInspectorProps {
   onToggleBuzzerAudio: () => void;
   onUpdatePartProps: (partId: string, patch: Record<string, unknown>) => void;
   onRotatePart: (partId: string) => void;
+  onFlipPart: (partId: string, axis: 'x' | 'y') => void;
   onDeletePart: (partId: string) => void;
   onUpdateWireColor: (wireId: string, color: string) => void;
+  onResetWireShape: (wireId: string) => void;
   onDeleteWire: (wireId: string) => void;
   onPressButton: (partId: string, pressed: boolean) => void;
   onPressKeypadKey: (partId: string, row: number, col: number, pressed: boolean) => void;
@@ -91,8 +93,10 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
   onToggleBuzzerAudio,
   onUpdatePartProps,
   onRotatePart,
+  onFlipPart,
   onDeletePart,
   onUpdateWireColor,
+  onResetWireShape,
   onDeleteWire,
   onPressButton,
   onPressKeypadKey,
@@ -108,7 +112,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
       <>
         <div className="panel-header">
           <span>{t.inspector}</span>
-          <button type="button" className="btn btn-compact mobile-only-btn" onClick={onCloseDrawer}>
+          <button type="button" className="btn btn-compact" onClick={onCloseDrawer}>
             {t.close}
           </button>
         </div>
@@ -134,7 +138,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
       <>
         <div className="panel-header">
           <span>{t.inspectorWireTitle}</span>
-          <button type="button" className="btn btn-compact mobile-only-btn" onClick={onCloseDrawer}>
+          <button type="button" className="btn btn-compact" onClick={onCloseDrawer}>
             {t.close}
           </button>
         </div>
@@ -160,9 +164,28 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             </div>
           </div>
 
-          <button type="button" className="btn btn-danger" onClick={() => onDeleteWire(selectedWire.id)}>
-            {t.wireRemove}
-          </button>
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            {t.wireEditHint}
+          </p>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn"
+              style={{ flex: 1 }}
+              onClick={() => onResetWireShape(selectedWire.id)}
+            >
+              {t.wireResetShape}
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              style={{ flex: 1 }}
+              onClick={() => onDeleteWire(selectedWire.id)}
+            >
+              {t.wireRemove}
+            </button>
+          </div>
         </div>
       </>
     );
@@ -186,7 +209,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
         <span>
           {title} ({part.id})
         </span>
-        <button type="button" className="btn btn-compact mobile-only-btn" onClick={onCloseDrawer}>
+        <button type="button" className="btn btn-compact" onClick={onCloseDrawer}>
           {t.close}
         </button>
       </div>
@@ -975,17 +998,39 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
           </div>
         )}
 
-        {/* Common rotation & deletion controls */}
+        {/* Flip horizontal & vertical available on every component */}
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-          {!isMcuBoardType(part.type) && (
+          <button
+            type="button"
+            className={`btn ${part.flipX ? 'btn-active' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => onFlipPart(part.id, 'x')}
+            aria-pressed={Boolean(part.flipX)}
+          >
+            ⇄ {t.flipH}
+          </button>
+          <button
+            type="button"
+            className={`btn ${part.flipY ? 'btn-active' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => onFlipPart(part.id, 'y')}
+            aria-pressed={Boolean(part.flipY)}
+          >
+            ⇅ {t.flipV}
+          </button>
+        </div>
+
+        {/* Common rotation & deletion controls (MCU boards are switched from top-left selector) */}
+        {!isMcuBoardType(part.type) && (
+          <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onRotatePart(part.id)}>
               {t.rotate}
             </button>
-          )}
-          <button type="button" className="btn btn-danger" style={{ flex: 1 }} onClick={() => onDeletePart(part.id)}>
-            {t.deleteSelected}
-          </button>
-        </div>
+            <button type="button" className="btn btn-danger" style={{ flex: 1 }} onClick={() => onDeletePart(part.id)}>
+              {t.deleteSelected}
+            </button>
+          </div>
+        )}
       </div>
     </>
   );

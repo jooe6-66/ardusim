@@ -49,6 +49,8 @@ export interface PartInstance {
   x: number;
   y: number;
   rotation: 0 | 90 | 180 | 270;
+  flipX?: boolean;
+  flipY?: boolean;
   props: Record<string, unknown>;
 }
 
@@ -174,9 +176,9 @@ export function pinKey(ref: PinRef): string {
   return `${ref.partId}:${ref.pinId}`;
 }
 
-/** Transform a local pin coordinate on a part to world coordinates given x, y, width, height, rotation. */
+/** Transform a local pin coordinate on a part to world coordinates given x, y, width, height, rotation, and flip. */
 export function getPinWorldPosition(
-  part: Pick<PartInstance, 'x' | 'y' | 'rotation'>,
+  part: Pick<PartInstance, 'x' | 'y' | 'rotation' | 'flipX' | 'flipY'>,
   manifest: Pick<PartManifest, 'width' | 'height'>,
   pin: Pick<PinDef, 'x' | 'y'>
 ): Point {
@@ -202,6 +204,8 @@ export function getPinWorldPosition(
     default:
       break;
   }
+  if (part.flipX) rx = -rx;
+  if (part.flipY) ry = -ry;
   return {
     x: Math.round((part.x + cx + rx) * 10) / 10,
     y: Math.round((part.y + cy + ry) * 10) / 10,

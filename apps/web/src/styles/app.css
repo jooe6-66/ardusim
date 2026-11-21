@@ -276,6 +276,10 @@ select:focus-visible,
   overflow-y: auto;
 }
 
+.pane-inspector.drawer-closed {
+  display: none;
+}
+
 .inspector-backdrop {
   display: none;
 }
@@ -375,6 +379,33 @@ select:focus-visible,
   touch-action: none;
 }
 
+/* Keep SVG text labels and LCD/OLED display screens readable when a part is flipped */
+.part-unflip-x text,
+.part-unflip-x .unflip-display {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleX(-1);
+}
+
+.part-unflip-y text,
+.part-unflip-y .unflip-display {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(-1);
+}
+
+.part-unflip-x.part-unflip-y text,
+.part-unflip-x.part-unflip-y .unflip-display {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(-1, -1);
+}
+
+.part-unflip-x .unflip-display text,
+.part-unflip-y .unflip-display text {
+  transform: none;
+}
+
 .canvas-empty-overlay {
   position: absolute;
   inset: 0;
@@ -425,13 +456,27 @@ select:focus-visible,
   bottom: 10px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
+  gap: 6px;
+  padding: 5px 6px;
   border-radius: var(--radius-md);
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-float);
   z-index: 14;
+  max-width: calc(100% - 20px);
+}
+
+.selection-pill-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 0 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
 }
 
 .wiring-banner {
@@ -603,6 +648,49 @@ select:focus-visible,
   border: 1px solid var(--border-strong);
   background: var(--bg-surface);
   color: var(--text-primary);
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--bg-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--bg-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 /* Inspector & drawers */
@@ -790,7 +878,6 @@ select:focus-visible,
   }
   .mobile-bottom-nav,
   .tablet-only-btn,
-  .selection-pill,
   .inspector-backdrop {
     display: none !important;
   }
@@ -798,8 +885,35 @@ select:focus-visible,
 
 /* 2. Tablet / iPad: 720px - 1099px & tall viewport */
 @media (min-width: 720px) and (max-width: 1099px) and (min-height: 541px) {
+  .top-header {
+    min-height: 54px;
+    gap: 8px;
+    padding: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+    padding-top: max(6px, env(safe-area-inset-top));
+  }
   .project-name-chip {
-    max-width: 120px;
+    display: none;
+  }
+  .board-select {
+    max-width: 170px;
+    min-height: 40px;
+  }
+  .header-actions .btn {
+    min-height: 40px;
+    padding: 0 11px;
+  }
+  .canvas-toolbar {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding: 7px 10px;
+    gap: 8px;
+  }
+  .canvas-toolbar .btn-compact {
+    min-height: 38px;
+    padding: 0 10px;
+  }
+  .canvas-hint-bar {
+    display: none;
   }
   .pane-code {
     width: 42%;
@@ -820,13 +934,10 @@ select:focus-visible,
     right: 0;
     top: 0;
     bottom: 0;
-    width: 310px;
+    width: 320px;
     max-width: 85vw;
     z-index: 25;
     box-shadow: var(--shadow-float);
-  }
-  .pane-inspector.drawer-closed {
-    display: none;
   }
   .mobile-bottom-nav {
     display: none !important;
@@ -836,33 +947,98 @@ select:focus-visible,
 /* 3. Phone Portrait: < 720px & tall viewport */
 @media (max-width: 719px) and (min-height: 541px) {
   .tablet-only-btn,
+  .inspector-toggle-btn,
+  .header-secondary-btn,
   .project-name-chip,
-  .canvas-hint-bar {
+  .canvas-hint-bar,
+  .zoom-step-btn {
     display: none !important;
   }
   .top-header {
-    gap: 5px;
-    min-height: 48px;
-    padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left));
-    padding-top: max(4px, env(safe-area-inset-top));
+    gap: 6px;
+    min-height: 52px;
+    padding: 6px max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
+    padding-top: max(6px, env(safe-area-inset-top));
   }
   .brand-group {
     gap: 6px;
   }
   .board-select {
-    max-width: 132px;
-    font-size: 12.5px;
-    min-height: 36px;
-    padding: 2px 6px;
+    flex: 1 1 auto;
+    max-width: 165px;
+    font-size: 13px;
+    min-height: 40px;
+    padding: 4px 8px;
   }
   .header-actions {
-    gap: 4px;
+    gap: 6px;
   }
   .header-actions .btn {
-    min-height: 36px;
-    min-width: 36px;
-    padding: 0 8px;
+    min-height: 40px;
+    min-width: 40px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .status-strip {
+    min-height: 28px;
+    padding: 4px max(10px, env(safe-area-inset-right)) 4px max(10px, env(safe-area-inset-left));
+    font-size: 12px;
+  }
+  .canvas-toolbar {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .toolbar-modes {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 3px;
+  }
+  .toolbar-modes .btn-compact {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 4px;
     font-size: 12.5px;
+    gap: 4px;
+  }
+  .toolbar-actions {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 3px;
+  }
+  .toolbar-actions .btn-compact {
+    min-height: 38px;
+    min-width: 38px;
+    padding: 0 9px;
+    font-size: 12.5px;
+  }
+  .toolbar-actions .btn-primary {
+    flex: 1 1 auto;
+  }
+  .selection-pill {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    justify-content: space-between;
+    padding: 6px 8px;
+  }
+  .selection-pill .btn-compact {
+    min-height: 38px;
+    min-width: 38px;
+    padding: 0 10px;
+  }
+  .mobile-bottom-nav {
+    gap: 8px;
+    padding: 6px max(10px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+  .nav-tab-btn {
+    min-height: 50px;
+    font-size: 12px;
   }
   .workspace {
     flex-direction: column;
@@ -898,7 +1074,7 @@ select:focus-visible,
     right: 0;
     bottom: 0;
     width: 100%;
-    max-height: 62dvh;
+    max-height: 66dvh;
     border-left: none;
     border-top: 1px solid var(--border-strong);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
@@ -909,15 +1085,12 @@ select:focus-visible,
   .pane-inspector::before {
     content: '';
     display: block;
-    width: 38px;
+    width: 40px;
     height: 4px;
     border-radius: 2px;
     background: var(--border-strong);
-    margin: 7px auto 2px;
+    margin: 8px auto 3px;
     flex-shrink: 0;
-  }
-  .pane-inspector.drawer-closed {
-    display: none;
   }
 }
 
@@ -930,12 +1103,14 @@ select:focus-visible,
 /* 4. Phone Landscape (and any short viewport <= 540px tall) */
 @media (max-height: 540px) {
   .tablet-only-btn,
+  .inspector-toggle-btn,
+  .header-secondary-btn,
   .project-name-chip,
   .canvas-hint-bar {
     display: none !important;
   }
   .top-header {
-    min-height: 40px;
+    min-height: 42px;
     gap: 6px;
     padding: 3px max(10px, env(safe-area-inset-right)) 3px max(10px, env(safe-area-inset-left));
   }
@@ -943,23 +1118,23 @@ select:focus-visible,
     font-size: 13.5px;
   }
   .board-select {
-    min-height: 30px;
-    max-width: 150px;
-    font-size: 12px;
-    padding: 1px 6px;
+    min-height: 34px;
+    max-width: 155px;
+    font-size: 12.5px;
+    padding: 2px 6px;
   }
   .header-actions {
-    gap: 4px;
+    gap: 5px;
   }
   .header-actions .btn {
-    min-height: 32px;
-    min-width: 32px;
-    padding: 0 8px;
-    font-size: 12px;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0 10px;
+    font-size: 12.5px;
   }
   .status-strip {
-    min-height: 20px;
-    padding: 1px max(10px, env(safe-area-inset-right)) 1px max(10px, env(safe-area-inset-left));
+    min-height: 22px;
+    padding: 2px max(10px, env(safe-area-inset-right)) 2px max(10px, env(safe-area-inset-left));
     font-size: 11px;
   }
   /* Left vertical rail in landscape: preserves full vertical height for canvas/code */
@@ -971,15 +1146,15 @@ select:focus-visible,
     display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: repeat(3, 1fr);
-    width: calc(64px + env(safe-area-inset-left));
+    width: calc(66px + env(safe-area-inset-left));
     padding: 6px 5px 6px max(5px, env(safe-area-inset-left));
     border-top: none;
     border-right: 1px solid var(--border-subtle);
-    gap: 4px;
+    gap: 5px;
   }
   .nav-tab-btn {
     min-height: 44px;
-    font-size: 10.5px;
+    font-size: 11px;
     padding: 2px;
   }
   .workspace {
@@ -1004,13 +1179,13 @@ select:focus-visible,
     border-top: none;
   }
   .canvas-toolbar {
-    padding: 3px 6px;
-    gap: 4px;
+    padding: 4px 6px;
+    gap: 5px;
   }
   .canvas-toolbar .btn-compact {
-    min-height: 30px;
-    min-width: 30px;
-    padding: 0 7px;
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0 8px;
     font-size: 12px;
   }
   .toolbar-group {
@@ -1030,7 +1205,7 @@ select:focus-visible,
     top: 0;
     right: 0;
     bottom: 0;
-    width: 280px;
+    width: 290px;
     max-width: 82vw;
     max-height: 100dvh;
     border-left: 1px solid var(--border-strong);
@@ -1039,9 +1214,6 @@ select:focus-visible,
     z-index: 40;
     box-shadow: var(--shadow-float);
     padding-right: env(safe-area-inset-right);
-  }
-  .pane-inspector.drawer-closed {
-    display: none;
   }
   .canvas-empty-overlay {
     padding: 8px;
@@ -1058,7 +1230,7 @@ select:focus-visible,
     font-size: 12px;
   }
   .canvas-empty-actions .btn {
-    min-height: 34px;
+    min-height: 36px;
     padding: 0 10px;
     font-size: 12.5px;
   }
@@ -1066,8 +1238,8 @@ select:focus-visible,
     padding: 4px 6px;
   }
   .symbol-key {
-    min-height: 30px;
-    min-width: 34px;
+    min-height: 32px;
+    min-width: 36px;
     font-size: 13px;
   }
   .sheet-backdrop {
@@ -1085,5 +1257,22 @@ select:focus-visible,
   .part-card {
     min-height: 58px;
     padding: 7px 8px;
+  }
+}
+
+/* Touch devices (iPad Pro landscape, tablets, phones): keep interactive controls comfortable for fingers */
+@media (pointer: coarse) {
+  .btn-compact {
+    min-height: 38px;
+    min-width: 38px;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    width: 26px;
+    height: 26px;
+    margin-top: -11px;
+  }
+  input[type='range']::-moz-range-thumb {
+    width: 26px;
+    height: 26px;
   }
 }

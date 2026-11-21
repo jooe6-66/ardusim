@@ -523,13 +523,15 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
       <g>
         <rect x={14} y={4} width={178} height={84} rx={5} fill="#166534" stroke={selected ? 'var(--accent)' : '#14532D'} strokeWidth={selected ? 2.5 : 1.5} />
         <rect x={24} y={16} width={158} height={58} rx={3} fill="#0F172A" />
-        <rect x={30} y={22} width={146} height={46} rx={2} fill={screenBg} />
-        <text x={36} y={40} fill={screenFg} fontSize={12} fontWeight={600} fontFamily="var(--font-mono)" xmlSpace="preserve">
-          {row0}
-        </text>
-        <text x={36} y={59} fill={screenFg} fontSize={12} fontWeight={600} fontFamily="var(--font-mono)" xmlSpace="preserve">
-          {row1}
-        </text>
+        <g className="unflip-display">
+          <rect x={30} y={22} width={146} height={46} rx={2} fill={screenBg} />
+          <text x={36} y={40} fill={screenFg} fontSize={12} fontWeight={600} fontFamily="var(--font-mono)" xmlSpace="preserve">
+            {row0}
+          </text>
+          <text x={36} y={59} fill={screenFg} fontSize={12} fontWeight={600} fontFamily="var(--font-mono)" xmlSpace="preserve">
+            {row1}
+          </text>
+        </g>
         {manifest.pins.map((p) => (
           <g key={p.id}>
             <line x1={6} y1={p.y} x2={16} y2={p.y} stroke="#CBD5E1" strokeWidth={2.4} />
@@ -548,16 +550,18 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
       <g>
         <rect x={4} y={14} width={148} height={90} rx={5} fill="#1E3A8A" stroke={selected ? 'var(--accent)' : '#172554'} strokeWidth={selected ? 2.5 : 1.5} />
         <rect x={12} y={28} width={132} height={68} rx={2} fill="#020617" stroke="#334155" strokeWidth={1} />
-        <rect x={14} y={30} width={128} height={64} fill={inv && displayOn ? '#38BDF8' : '#020617'} />
-        {displayOn && oledPath ? (
-          <g transform="translate(14, 30)">
-            <path d={oledPath} fill={inv ? '#020617' : '#38BDF8'} />
-          </g>
-        ) : (
-          <text x={78} y={65} textAnchor="middle" fill="#64748B" fontSize={9} fontFamily="var(--font-mono)">
-            OLED 128x64
-          </text>
-        )}
+        <g className="unflip-display">
+          <rect x={14} y={30} width={128} height={64} fill={inv && displayOn ? '#38BDF8' : '#020617'} />
+          {displayOn && oledPath ? (
+            <g transform="translate(14, 30)">
+              <path d={oledPath} fill={inv ? '#020617' : '#38BDF8'} />
+            </g>
+          ) : (
+            <text x={78} y={65} textAnchor="middle" fill="#64748B" fontSize={9} fontFamily="var(--font-mono)">
+              OLED 128x64
+            </text>
+          )}
+        </g>
         {manifest.pins.map((p) => (
           <g key={p.id}>
             <line x1={p.x} y1={6} x2={p.x} y2={16} stroke="#CBD5E1" strokeWidth={2.2} />

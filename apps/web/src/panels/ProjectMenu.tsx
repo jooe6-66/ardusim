@@ -18,6 +18,9 @@ interface ProjectMenuProps {
   onExportIno: () => void;
   onImportIno: (text: string) => boolean;
   onImportHex: (hex: string) => boolean;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
+  onToggleLang: () => void;
   lang: Lang;
   t: Messages;
 }
@@ -37,6 +40,9 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
   onExportIno,
   onImportIno,
   onImportHex,
+  theme,
+  onToggleTheme,
+  onToggleLang,
   lang,
   t,
 }) => {
@@ -75,9 +81,17 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
       <div className="sheet-dialog">
         <div className="panel-header">
           <span>{t.projectsTitle}</span>
-          <button type="button" className="btn btn-compact" onClick={onClose}>
-            {t.close}
-          </button>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button type="button" className="btn btn-compact" onClick={onToggleLang}>
+              {lang.toUpperCase()}
+            </button>
+            <button type="button" className="btn btn-compact" onClick={onToggleTheme}>
+              {theme === 'light' ? 'Dark' : 'Light'}
+            </button>
+            <button type="button" className="btn btn-compact" onClick={onClose}>
+              {t.close}
+            </button>
+          </div>
         </div>
 
         <div className="sheet-body">

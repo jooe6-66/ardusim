@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  autoTidyCircuit,
   autoTidyWires,
   buildNetlist,
+  getPinWorldPosition,
+  moveWireCorner,
+  moveWireSegment,
   parseIntelHex,
   PassiveCircuitSolver,
+  rotateExitDir,
   routeWire,
   PartInstance,
   PartManifest,
@@ -266,5 +271,179 @@ test('autoTidyWires routes around component obstacles with strictly orthogonal p
       const dy = Math.abs(w.waypoints![i].y - w.waypoints![i - 1].y);
       assert.ok(dx < 0.5 || dy < 0.5, `Non-orthogonal tidied wire ${w.id} segment ${i}`);
     }
+  }
+});
+
+test('autoTidyWires exits pins straight with board clearance and separates parallel wires', () => {
+  const unoManifest = testManifests.get('arduino-uno')!;
+  const unoWithExit: PartManifest = {
+    ...unoManifest,
+    pins: [
+      { id: '13', label: 'D13', x: 74, y: 14, type: 'digital', exitDir: 'up', avrPort: 'B', avrBit: 5 },
+      { id: '12', label: 'D12', x: 86, y: 14, type: 'digital', exitDir: 'up', avrPort: 'B', avrBit: 4 },
+      { id: '11', label: 'D11', x: 98, y: 14, type: 'digital', exitDir: 'up', avrPort: 'B', avrBit: 3 },
+    ],
+  };
+  const ledManifest = testManifests.get('led')!;
+  const ledWithExit: PartManifest = {
+    ...ledManifest,
+    pins: [
+      { id: 'A', label: 'A', x: 16, y: 54, type: 'passive', exitDir: 'down' },
+      { id: 'C', label: 'C', x: 28, y: 54, type: 'passive', exitDir: 'down' },
+    ],
+  };
+  const manifests = new Map<string, PartManifest>([
+    ['arduino-uno', unoWithExit],
+    ['led', ledWithExit],
+  ]);
+
+  const parts: PartInstance[] = [
+    { id: 'u1', type: 'arduino-uno', x: 48, y: 168, rotation: 0, props: {} },
+    { id: 'l1', type: 'led', x: 408, y: 84, rotation: 0, props: { color: 'red' } },
+    { id: 'l2', type: 'led', x: 480, y: 84, rotation: 0, props: { color: 'green' } },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'u1', pinId: '13' }, to: { partId: 'l1', pinId: 'A' }, color: '#c00' },
+    { id: 'w2', from: { partId: 'u1', pinId: '12' }, to: { partId: 'l2', pinId: 'A' }, color: '#0a0' },
+  ];
+
+  const tidied = autoTidyWires(parts, wires, manifests);
+  const horizTrunks: number[] = [];
+
+  for (const w of tidied) {
+    const startPin = unoWithExit.pins.find((p) => p.id === w.from.pinId)!;
+    const endPin = ledWithExit.pins.find((p) => p.id === w.to.pinId)!;
+    const endPart = parts.find((p) => p.id === w.to.partId)!;
+    const startWorld = { x: parts[0].x + startPin.x, y: parts[0].y + startPin.y };
+    const endWorld = { x: endPart.x + endPin.x, y: endPart.y + endPin.y };
+    const full = routeWire(startWorld, endWorld, { waypoints: w.waypoints, startExit: 'up', endExit: 'down' });
+
+    // First segment must go straight UP from pin with zero X kink and clear board top edge (y=168)
+    assert.equal(full[1].x, startWorld.x, `${w.id} should leave pin dead-straight vertically`);
+    assert.ok(full[1].y <= parts[0].y - 12, `${w.id} should clear board edge by at least 12px, got y=${full[1].y}`);
+
+    // Collect horizontal trunk Y coordinates above board
+    for (let i = 1; i < full.length; i++) {
+      if (Math.abs(full[i].y - full[i - 1].y) < 0.5 && Math.abs(full[i].x - full[i - 1].x) > 40) {
+        horizTrunks.push(full[i].y);
+      }
+    }
+  }
+
+  assert.ok(horizTrunks.length >= 2, 'Expected distinct horizontal trunks for both wires');
+  assert.ok(
+    Math.abs(horizTrunks[0] - horizTrunks[1]) >= 12,
+    `Parallel horizontal trunks must be separated by >=12px, got ${horizTrunks.join(', ')}`
+  );
+});
+
+test('getPinWorldPosition and rotateExitDir honor flipX and flipY with rotation', () => {
+  const manifest = { width: 100, height: 60 };
+  const pin = { x: 20, y: 10 }; // dx = -30, dy = -20 around center (50, 30)
+
+  assert.deepEqual(
+    getPinWorldPosition({ x: 0, y: 0, rotation: 0, flipX: true }, manifest, pin),
+    { x: 80, y: 10 }
+  );
+  assert.deepEqual(
+    getPinWorldPosition({ x: 0, y: 0, rotation: 0, flipY: true }, manifest, pin),
+    { x: 20, y: 50 }
+  );
+  // Rotate 90 CW: (rx, ry) = (20, -30); then flipX -> (-20, -30) => (30, 0)
+  assert.deepEqual(
+    getPinWorldPosition({ x: 0, y: 0, rotation: 90, flipX: true }, manifest, pin),
+    { x: 30, y: 0 }
+  );
+
+  assert.equal(rotateExitDir('left', 0, true, false), 'right');
+  assert.equal(rotateExitDir('up', 0, false, true), 'down');
+  // 'up' rotated 90 CW -> 'right', then flipX -> 'left'
+  assert.equal(rotateExitDir('up', 90, true, false), 'left');
+});
+
+test('autoTidyCircuit arranges overlapping components without collisions and routes clean wires', () => {
+  // Deliberately stack all parts on top of each other at (100, 100)
+  const messyParts: PartInstance[] = [
+    { id: 'u1', type: 'arduino-uno', x: 100, y: 100, rotation: 0, props: {} },
+    { id: 'r1', type: 'resistor', x: 100, y: 100, rotation: 0, props: { value: 220, unit: 'ohm' } },
+    { id: 'l1', type: 'led', x: 100, y: 100, rotation: 0, props: { color: 'red' } },
+    { id: 'd1', type: 'diode', x: 100, y: 100, rotation: 90, props: { model: '1N4007', vf: 0.7 } },
+    { id: 'c1', type: 'capacitor', x: 100, y: 100, rotation: 0, props: { value: 100, unit: 'uf', kind: 'electrolytic' } },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'u1', pinId: '13' }, to: { partId: 'r1', pinId: '1' }, color: '#c00' },
+    { id: 'w2', from: { partId: 'r1', pinId: '2' }, to: { partId: 'l1', pinId: 'A' }, color: '#c00' },
+    { id: 'w3', from: { partId: 'l1', pinId: 'C' }, to: { partId: 'u1', pinId: 'GND.1' }, color: '#000' },
+    { id: 'w4', from: { partId: 'u1', pinId: '5V' }, to: { partId: 'd1', pinId: 'A' }, color: '#0a0' },
+    { id: 'w5', from: { partId: 'd1', pinId: 'C' }, to: { partId: 'c1', pinId: '1' }, color: '#0a0' },
+  ];
+
+  const { parts, wires: tidiedWires } = autoTidyCircuit(messyParts, wires, testManifests);
+  assert.equal(parts.length, messyParts.length);
+  assert.equal(tidiedWires.length, wires.length);
+
+  // Verify zero bounding-box overlaps (accounting for 90-degree rotation on d1)
+  const rects = parts.map((p) => {
+    const m = testManifests.get(p.type)!;
+    const cx = p.x + m.width / 2;
+    const cy = p.y + m.height / 2;
+    const rot = p.rotation === 90 || p.rotation === 270;
+    const w = rot ? m.height : m.width;
+    const h = rot ? m.width : m.height;
+    return { id: p.id, x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2 };
+  });
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i];
+      const b = rects[j];
+      const overlaps = a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+      assert.equal(overlaps, false, `Parts ${a.id} and ${b.id} must not overlap after autoTidyCircuit`);
+    }
+  }
+});
+
+test('moveWireCorner and moveWireSegment reshape wires while keeping strict orthogonality', () => {
+  const basePts = [
+    { x: 60, y: 24 },
+    { x: 60, y: 96 },
+    { x: 204, y: 96 },
+    { x: 204, y: 156 },
+  ];
+
+  // Slide middle horizontal segment downward to y=120
+  const slidWp = moveWireSegment(basePts, 1, 132, 120);
+  const slidFull = [basePts[0], ...slidWp, basePts[basePts.length - 1]];
+  assert.deepEqual(slidWp, [
+    { x: 60, y: 120 },
+    { x: 204, y: 120 },
+  ]);
+  for (let i = 1; i < slidFull.length; i++) {
+    assert.ok(
+      Math.abs(slidFull[i].x - slidFull[i - 1].x) < 0.5 ||
+        Math.abs(slidFull[i].y - slidFull[i - 1].y) < 0.5
+    );
+  }
+
+  // Pull first pin-connected segment sideways to create a clean new orthogonal jog
+  const jogWp = moveWireSegment(basePts, 0, 96, 60);
+  const jogFull = [basePts[0], ...jogWp, basePts[basePts.length - 1]];
+  assert.ok(jogWp.length >= 3, 'Expected new orthogonal bend points on pin-attached segment');
+  for (let i = 1; i < jogFull.length; i++) {
+    assert.ok(
+      Math.abs(jogFull[i].x - jogFull[i - 1].x) < 0.5 ||
+        Math.abs(jogFull[i].y - jogFull[i - 1].y) < 0.5,
+      `Non-orthogonal segment ${i}`
+    );
+  }
+
+  // Drag corner 1 to (84, 72) and verify orthogonality is preserved
+  const cornerWp = moveWireCorner(basePts, 1, 84, 72);
+  const cornerFull = [basePts[0], ...cornerWp, basePts[basePts.length - 1]];
+  for (let i = 1; i < cornerFull.length; i++) {
+    assert.ok(
+      Math.abs(cornerFull[i].x - cornerFull[i - 1].x) < 0.5 ||
+        Math.abs(cornerFull[i].y - cornerFull[i - 1].y) < 0.5,
+      `Non-orthogonal corner drag segment ${i}`
+    );
   }
 });

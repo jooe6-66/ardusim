@@ -9,13 +9,15 @@ import {
   buildNetlist,
   getPinWorldPosition,
   isMcuBoardType,
+  moveWireCorner,
+  moveWireSegment,
   pinKey,
   rotateExitDir,
   routeWire,
   wirePointsToSvgPath,
 } from '@ardusim/sim-core';
 import { PART_MANIFEST_MAP } from '@ardusim/parts';
-import { Messages } from '../i18n/messages';
+import { Lang, Messages } from '../i18n/messages';
 import { PartGraphics } from './PartGraphics';
 
 export type CanvasToolMode = 'auto' | 'wire' | 'move' | 'delete';
@@ -38,9 +40,11 @@ interface CircuitCanvasProps {
   selectedWireId: string | null;
   onSelectPart: (id: string | null) => void;
   onSelectWire: (id: string | null) => void;
-  onMovePart: (partId: string, x: number, y: number, commit: boolean) => void;
+  onMovePart: (partId: string, x: number, y: number, commit: boolean, recordHistory?: boolean) => void;
   onRotatePart: (partId: string) => void;
+  onFlipPart: (partId: string, axis: 'x' | 'y') => void;
   onAddWire: (from: PinRef, to: PinRef, waypoints: Point[]) => void;
+  onUpdateWireWaypoints: (wireId: string, waypoints: Point[] | undefined, recordHistory: boolean) => void;
   onDeleteWire: (wireId: string) => void;
   onDeletePart: (partId: string) => void;
   onPressButton: (partId: string, pressed: boolean) => void;
@@ -52,10 +56,13 @@ interface CircuitCanvasProps {
   onUndo: () => void;
   onRedo: () => void;
   onTidyWires: () => void;
+  hasManualLayout: boolean;
   fitTrigger: number;
+  inspectorOpen: boolean;
   onOpenPartPicker: () => void;
   onOpenFileMenu: () => void;
   onOpenInspector: () => void;
+  lang: Lang;
   t: Messages;
 }
 
@@ -67,8 +74,19 @@ interface WorldPin {
   displayLabel: string;
 }
 
+interface RoutedWireRender {
+  wire: Wire;
+  fromPin: WorldPin;
+  toPin: WorldPin;
+  pts: Point[];
+  d: string;
+}
+
 const SNAP_GRID = 12;
-const PIN_CAPTURE_SCREEN_PX = 30;
+const PIN_CAPTURE_TOUCH_WIRE_PX = 30;
+const PIN_CAPTURE_TOUCH_AUTO_PX = 26;
+const PIN_CAPTURE_TOUCH_IN_PART_PX = 15;
+const PIN_CAPTURE_MOUSE_PX = 17;
 
 function snap(v: number): number {
   return Math.round(v / SNAP_GRID) * SNAP_GRID;
@@ -79,6 +97,50 @@ function boardShortPrefix(type: string, id: string): string {
   if (type === 'arduino-nano') return 'NANO';
   if (type === 'arduino-mega') return 'MEGA';
   return id.toUpperCase();
+}
+
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function getKeypadCell(part: PartInstance, world: Point): { row: number; col: number } | null {
+  const manifest = PART_MANIFEST_MAP.get(part.type);
+  if (!manifest) return null;
+  const cx = part.x + manifest.width / 2;
+  const cy = part.y + manifest.height / 2;
+  const dx = (world.x - cx) * (part.flipX ? -1 : 1);
+  const dy = (world.y - cy) * (part.flipY ? -1 : 1);
+  let rx = dx;
+  let ry = dy;
+  switch (part.rotation) {
+    case 90:
+      rx = dy;
+      ry = -dx;
+      break;
+    case 180:
+      rx = -dx;
+      ry = -dy;
+      break;
+    case 270:
+      rx = -dy;
+      ry = dx;
+      break;
+    default:
+      break;
+  }
+  const lx = rx + manifest.width / 2;
+  const ly = ry + manifest.height / 2;
+  const col = Math.floor((lx - 12) / 24);
+  const row = Math.floor((ly - 12) / 24);
+  if (row >= 0 && row < 4 && col >= 0 && col < 4) {
+    return { row, col };
+  }
+  return null;
 }
 
 export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
@@ -94,7 +156,9 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onSelectWire,
   onMovePart,
   onRotatePart,
+  onFlipPart,
   onAddWire,
+  onUpdateWireWaypoints,
   onDeleteWire,
   onDeletePart,
   onPressButton,
@@ -106,10 +170,13 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onUndo,
   onRedo,
   onTidyWires,
+  hasManualLayout,
   fitTrigger,
+  inspectorOpen,
   onOpenPartPicker,
   onOpenFileMenu,
   onOpenInspector,
+  lang,
   t,
 }) => {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -129,11 +196,21 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   } | null>(null);
   const dragStateRef = useRef<
     | { kind: 'pan'; startClient: Point; startView: Point; moved: boolean }
-    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; moved: boolean; wasSelected: boolean }
+    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; moved: boolean; wasSelected: boolean; historySaved: boolean }
+    | { kind: 'wire-corner'; wireId: string; cornerIdx: number; origPts: Point[]; startClient: Point; moved: boolean; historySaved: boolean }
+    | { kind: 'wire-segment'; wireId: string; segIdx: number; origPts: Point[]; startClient: Point; moved: boolean; historySaved: boolean }
     | { kind: 'button'; partId: string }
     | { kind: 'keypad'; partId: string; row: number; col: number }
     | null
   >(null);
+  const lastCornerTapRef = useRef<{ wireId: string; cornerIdx: number; time: number } | null>(null);
+  const loupeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (loupeTimerRef.current !== null) window.clearTimeout(loupeTimerRef.current);
+    };
+  }, []);
 
   const worldPins = useMemo<WorldPin[]>(() => {
     const list: WorldPin[] = [];
@@ -159,6 +236,65 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     for (const wp of worldPins) m.set(wp.key, wp);
     return m;
   }, [worldPins]);
+
+  const routedWires = useMemo<RoutedWireRender[]>(() => {
+    const list: RoutedWireRender[] = [];
+    wires.forEach((wire, index) => {
+      const fromPin = pinLookup.get(pinKey(wire.from));
+      const toPin = pinLookup.get(pinKey(wire.to));
+      if (!fromPin || !toPin) return;
+      const pts = routeWire(fromPin.world, toPin.world, {
+        startExit: rotateExitDir(fromPin.pin.exitDir, fromPin.part.rotation, fromPin.part.flipX, fromPin.part.flipY),
+        endExit: rotateExitDir(toPin.pin.exitDir, toPin.part.rotation, toPin.part.flipX, toPin.part.flipY),
+        waypoints: wire.waypoints,
+        laneIndex: index,
+      });
+      list.push({ wire, fromPin, toPin, pts, d: wirePointsToSvgPath(pts) });
+    });
+    return list;
+  }, [wires, pinLookup]);
+
+  const selectedRoutedWire = useMemo(
+    () => (selectedWireId ? routedWires.find((rw) => rw.wire.id === selectedWireId) ?? null : null),
+    [routedWires, selectedWireId]
+  );
+
+  const findSelectedWireHandle = useCallback(
+    (st: Point, isTouch: boolean): { kind: 'corner' | 'segment'; idx: number } | null => {
+      if (!selectedRoutedWire) return null;
+      const pts = selectedRoutedWire.pts;
+      const cornerRadius = isTouch ? 22 : 12;
+      let bestCorner: { idx: number; dist: number } | null = null;
+      for (let i = 1; i < pts.length - 1; i++) {
+        const sx = pts[i].x * view.scale + view.x;
+        const sy = pts[i].y * view.scale + view.y;
+        const d = Math.hypot(sx - st.x, sy - st.y);
+        if (d <= cornerRadius && (!bestCorner || d < bestCorner.dist)) {
+          bestCorner = { idx: i, dist: d };
+        }
+      }
+      if (bestCorner) return { kind: 'corner', idx: bestCorner.idx };
+
+      const segRadius = isTouch ? 20 : 11;
+      let bestSeg: { idx: number; dist: number } | null = null;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const x1 = pts[i].x * view.scale + view.x;
+        const y1 = pts[i].y * view.scale + view.y;
+        const x2 = pts[i + 1].x * view.scale + view.x;
+        const y2 = pts[i + 1].y * view.scale + view.y;
+        if (Math.hypot(x2 - x1, y2 - y1) < 24) continue;
+        const mx = (x1 + x2) / 2;
+        const my = (y1 + y2) / 2;
+        const d = Math.hypot(mx - st.x, my - st.y);
+        if (d <= segRadius && (!bestSeg || d < bestSeg.dist)) {
+          bestSeg = { idx: i, dist: d };
+        }
+      }
+      if (bestSeg) return { kind: 'segment', idx: bestSeg.idx };
+      return null;
+    },
+    [selectedRoutedWire, view]
+  );
 
   const netlist = useMemo(
     () =>
@@ -200,25 +336,46 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     [clientToStage, view]
   );
 
-  const findNearestPin = useCallback(
-    (clientX: number, clientY: number, isTouch: boolean): WorldPin | null => {
+  const findNearestPinHit = useCallback(
+    (clientX: number, clientY: number, maxPx: number): { wp: WorldPin; dist: number } | null => {
       const st = clientToStage(clientX, clientY);
-      const maxPx = isTouch ? PIN_CAPTURE_SCREEN_PX : 18;
-      let best: WorldPin | null = null;
-      let bestDist = maxPx;
+      let best: { wp: WorldPin; dist: number } | null = null;
+      let bestScore = maxPx;
       for (const wp of worldPins) {
         const sx = wp.world.x * view.scale + view.x;
         const sy = wp.world.y * view.scale + view.y;
         const d = Math.hypot(sx - st.x, sy - st.y);
         const bias = wp.part.type === 'breadboard-half' ? 3 : 0;
-        if (d + bias < bestDist) {
-          bestDist = d + bias;
-          best = wp;
+        if (d + bias < bestScore) {
+          bestScore = d + bias;
+          best = { wp, dist: d };
         }
       }
       return best;
     },
     [clientToStage, view, worldPins]
+  );
+
+  const findWireAtStage = useCallback(
+    (st: Point, isTouch: boolean): { wire: Wire; dist: number } | null => {
+      const maxPx = isTouch ? 16 : 9;
+      let best: { wire: Wire; dist: number } | null = null;
+      for (const rw of routedWires) {
+        const pts = rw.pts;
+        for (let i = 1; i < pts.length; i++) {
+          const x1 = pts[i - 1].x * view.scale + view.x;
+          const y1 = pts[i - 1].y * view.scale + view.y;
+          const x2 = pts[i].x * view.scale + view.x;
+          const y2 = pts[i].y * view.scale + view.y;
+          const d = distToSegment(st.x, st.y, x1, y1, x2, y2);
+          if (d <= maxPx && (!best || d < best.dist)) {
+            best = { wire: rw.wire, dist: d };
+          }
+        }
+      }
+      return best;
+    },
+    [routedWires, view]
   );
 
   const findPartAtWorld = useCallback(
@@ -261,10 +418,14 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     for (const p of parts) {
       const m = PART_MANIFEST_MAP.get(p.type);
       if (!m) continue;
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x + m.width);
-      maxY = Math.max(maxY, p.y + m.height);
+      const cx = p.x + m.width / 2;
+      const cy = p.y + m.height / 2;
+      const halfW = (p.rotation === 90 || p.rotation === 270 ? m.height : m.width) / 2;
+      const halfH = (p.rotation === 90 || p.rotation === 270 ? m.width : m.height) / 2;
+      minX = Math.min(minX, cx - halfW);
+      minY = Math.min(minY, cy - halfH);
+      maxX = Math.max(maxX, cx + halfW);
+      maxY = Math.max(maxY, cy + halfH);
     }
     const pad = 48;
     const contentW = Math.max(200, maxX - minX + pad * 2);
@@ -275,7 +436,6 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     setView({ x, y, scale });
   }, [parts]);
 
-  // Auto-fit view & cancel dangling wire drafts whenever template or board switches (Bug #5 & #6 fix)
   useEffect(() => {
     setWireDraft(null);
     const raf = requestAnimationFrame(() => fitView());
@@ -283,7 +443,6 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitTrigger]);
 
-  // Escape cancels an active wire draft (Bug #6 fix)
   useEffect(() => {
     if (!wireDraft) return;
     const onKey = (e: KeyboardEvent) => {
@@ -334,11 +493,39 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     [wireDraft, onAddWire, onSelectPart, onSelectWire]
   );
 
+  const startPartInteraction = (part: PartInstance, world: Point) => {
+    const wasSelected = selectedPartId === part.id;
+    onSelectPart(part.id);
+    dragStateRef.current = {
+      kind: 'part',
+      partId: part.id,
+      startWorld: world,
+      origPart: { x: part.x, y: part.y },
+      moved: false,
+      wasSelected,
+      historySaved: false,
+    };
+  };
+
+  const triggerPinTapWithLoupe = (wp: WorldPin, st: Point, isTouch: boolean) => {
+    if (loupeTimerRef.current !== null) {
+      window.clearTimeout(loupeTimerRef.current);
+      loupeTimerRef.current = null;
+    }
+    const volt = snapshot?.pinVoltages?.[wp.key];
+    const vText = running && volt !== undefined ? ` (${volt.toFixed(2)}V)` : '';
+    setLoupe({ x: st.x, y: Math.max(36, st.y - (isTouch ? 48 : 22)), text: `${wp.displayLabel}${vText}` });
+    handlePinTap(wp);
+  };
+
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     pointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
     if (pointersRef.current.size === 2) {
+      const prevDrag = dragStateRef.current;
+      if (prevDrag?.kind === 'button') onPressButton(prevDrag.partId, false);
+      else if (prevDrag?.kind === 'keypad') onPressKeypadKey(prevDrag.partId, prevDrag.row, prevDrag.col, false);
       dragStateRef.current = null;
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
@@ -358,18 +545,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const world = clientToWorld(e.clientX, e.clientY);
     const st = clientToStage(e.clientX, e.clientY);
 
-    if (mode === 'wire' || mode === 'auto' || wireDraft) {
-      const nearPin = findNearestPin(e.clientX, e.clientY, isTouch);
-      if (nearPin && mode !== 'delete') {
-        const volt = snapshot?.pinVoltages?.[nearPin.key];
-        const vText = running && volt !== undefined ? ` (${volt.toFixed(2)}V)` : '';
-        setLoupe({ x: st.x, y: Math.max(36, st.y - (isTouch ? 48 : 22)), text: `${nearPin.displayLabel}${vText}` });
-        handlePinTap(nearPin);
+    // 1. Active wire draft always finishes on pin or adds a bend waypoint
+    if (wireDraft) {
+      const nearPin = findNearestPinHit(
+        e.clientX,
+        e.clientY,
+        isTouch ? PIN_CAPTURE_TOUCH_WIRE_PX : PIN_CAPTURE_MOUSE_PX
+      );
+      if (nearPin) {
+        triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
         return;
       }
-    }
-
-    if (wireDraft) {
       setWireDraft((prev) =>
         prev ? { ...prev, waypoints: [...prev.waypoints, { x: snap(world.x), y: snap(world.y) }] } : null
       );
@@ -377,40 +563,179 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     const hitPart = findPartAtWorld(world);
-    if (hitPart) {
-      if (mode === 'delete') {
+    const hitNonBbPart = hitPart && hitPart.type !== 'breadboard-half' ? hitPart : null;
+    const hitWire = findWireAtStage(st, isTouch);
+
+    // 1b. Drag handles on currently selected wire (reshape corners or slide/bend segments manually)
+    if (
+      selectedRoutedWire &&
+      mode !== 'delete' &&
+      mode !== 'wire' &&
+      !(running && (hitNonBbPart?.type === 'pushbutton' || hitNonBbPart?.type === 'keypad-4x4'))
+    ) {
+      const handle = findSelectedWireHandle(st, isTouch);
+      if (handle) {
+        const origPts = selectedRoutedWire.pts.map((p) => ({ x: p.x, y: p.y }));
+        if (handle.kind === 'corner') {
+          dragStateRef.current = {
+            kind: 'wire-corner',
+            wireId: selectedRoutedWire.wire.id,
+            cornerIdx: handle.idx,
+            origPts,
+            startClient: { x: e.clientX, y: e.clientY },
+            moved: false,
+            historySaved: false,
+          };
+        } else {
+          dragStateRef.current = {
+            kind: 'wire-segment',
+            wireId: selectedRoutedWire.wire.id,
+            segIdx: handle.idx,
+            origPts,
+            startClient: { x: e.clientX, y: e.clientY },
+            moved: false,
+            historySaved: false,
+          };
+        }
+        return;
+      }
+    }
+
+    // 2. Delete mode: unambiguous wire vs deletable component (MCU board is protected)
+    if (mode === 'delete') {
+      if (hitWire && (!hitNonBbPart || hitWire.dist <= (isTouch ? 9 : 6))) {
+        onDeleteWire(hitWire.wire.id);
+        return;
+      }
+      if (hitPart && !isMcuBoardType(hitPart.type)) {
         onDeletePart(hitPart.id);
         return;
       }
-      if (running && hitPart.type === 'pushbutton' && mode !== 'move') {
-        onPressButton(hitPart.id, true);
-        onSelectPart(hitPart.id);
-        dragStateRef.current = { kind: 'button', partId: hitPart.id };
+      if (hitWire) {
+        onDeleteWire(hitWire.wire.id);
         return;
       }
-      if (running && hitPart.type === 'keypad-4x4' && mode !== 'move' && hitPart.rotation === 0) {
-        const lx = world.x - hitPart.x;
-        const ly = world.y - hitPart.y;
-        const col = Math.floor((lx - 12) / 24);
-        const row = Math.floor((ly - 12) / 24);
-        if (row >= 0 && row < 4 && col >= 0 && col < 4) {
-          onPressKeypadKey(hitPart.id, row, col, true);
-          onSelectPart(hitPart.id);
-          dragStateRef.current = { kind: 'keypad', partId: hitPart.id, row, col };
+      dragStateRef.current = {
+        kind: 'pan',
+        startClient: { x: e.clientX, y: e.clientY },
+        startView: { x: view.x, y: view.y },
+        moved: false,
+      };
+      return;
+    }
+
+    // 3. Dedicated Move mode: never steals taps for wires or pins
+    if (mode === 'move') {
+      if (hitPart) {
+        startPartInteraction(hitPart, world);
+        return;
+      }
+      dragStateRef.current = {
+        kind: 'pan',
+        startClient: { x: e.clientX, y: e.clientY },
+        startView: { x: view.x, y: view.y },
+        moved: false,
+      };
+      return;
+    }
+
+    // 4. Dedicated Wire mode: generous pin hit area, pan on open space
+    if (mode === 'wire') {
+      const nearPin = findNearestPinHit(
+        e.clientX,
+        e.clientY,
+        isTouch ? PIN_CAPTURE_TOUCH_WIRE_PX : PIN_CAPTURE_MOUSE_PX
+      );
+      if (nearPin) {
+        triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
+        return;
+      }
+      dragStateRef.current = {
+        kind: 'pan',
+        startClient: { x: e.clientX, y: e.clientY },
+        startView: { x: view.x, y: view.y },
+        moved: false,
+      };
+      return;
+    }
+
+    // 5. Smart mode while SIMULATION IS RUNNING:
+    //    Interactive controls (pushbutton / keypad) and component bodies strictly beat wires & pins
+    //    so touching a button or sensor never gets hijacked by nearby jumper wires.
+    if (running) {
+      if (hitNonBbPart?.type === 'pushbutton') {
+        onPressButton(hitNonBbPart.id, true);
+        onSelectPart(hitNonBbPart.id);
+        dragStateRef.current = { kind: 'button', partId: hitNonBbPart.id };
+        return;
+      }
+      if (hitNonBbPart?.type === 'keypad-4x4') {
+        const cell = getKeypadCell(hitNonBbPart, world);
+        if (cell) {
+          onPressKeypadKey(hitNonBbPart.id, cell.row, cell.col, true);
+          onSelectPart(hitNonBbPart.id);
+          dragStateRef.current = { kind: 'keypad', partId: hitNonBbPart.id, row: cell.row, col: cell.col };
           return;
         }
       }
-
-      const wasSelected = selectedPartId === hitPart.id;
-      onSelectPart(hitPart.id);
+      if (hitNonBbPart) {
+        startPartInteraction(hitNonBbPart, world);
+        return;
+      }
+      if (hitWire) {
+        onSelectWire(hitWire.wire.id);
+        return;
+      }
+      if (hitPart) {
+        startPartInteraction(hitPart, world);
+        return;
+      }
       dragStateRef.current = {
-        kind: 'part',
-        partId: hitPart.id,
-        startWorld: world,
-        origPart: { x: hitPart.x, y: hitPart.y },
+        kind: 'pan',
+        startClient: { x: e.clientX, y: e.clientY },
+        startView: { x: view.x, y: view.y },
         moved: false,
-        wasSelected,
       };
+      return;
+    }
+
+    // 6. Smart mode while EDITING (not running):
+    //    Distinguish pin tips vs component centers vs open-space wires cleanly on touch & desktop.
+    const nearPin = findNearestPinHit(
+      e.clientX,
+      e.clientY,
+      isTouch ? PIN_CAPTURE_TOUCH_AUTO_PX : PIN_CAPTURE_MOUSE_PX
+    );
+    if (nearPin) {
+      if (!hitNonBbPart) {
+        triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
+        return;
+      }
+      const m = PART_MANIFEST_MAP.get(hitNonBbPart.type);
+      const centerSx = (hitNonBbPart.x + (m?.width ?? 0) / 2) * view.scale + view.x;
+      const centerSy = (hitNonBbPart.y + (m?.height ?? 0) / 2) * view.scale + view.y;
+      const distToCenter = Math.hypot(centerSx - st.x, centerSy - st.y);
+      const tightPinRadius = isTouch ? PIN_CAPTURE_TOUCH_IN_PART_PX : 13;
+      // Only treat tap inside a part body as a pin tap if directly on the pin pad (and not center of small parts)
+      const isMcuOrLargeHeader = isMcuBoardType(hitNonBbPart.type);
+      if (nearPin.dist <= tightPinRadius && (isMcuOrLargeHeader || nearPin.dist < distToCenter)) {
+        triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
+        return;
+      }
+    }
+
+    if (hitNonBbPart) {
+      startPartInteraction(hitNonBbPart, world);
+      return;
+    }
+
+    if (hitWire) {
+      onSelectWire(hitWire.wire.id);
+      return;
+    }
+
+    if (hitPart) {
+      startPartInteraction(hitPart, world);
       return;
     }
 
@@ -448,15 +773,19 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     if (wireDraft) {
-      const nearPin = findNearestPin(e.clientX, e.clientY, isTouch);
+      const nearPin = findNearestPinHit(
+        e.clientX,
+        e.clientY,
+        isTouch ? PIN_CAPTURE_TOUCH_WIRE_PX : PIN_CAPTURE_MOUSE_PX
+      );
       setWireDraft((prev) =>
-        prev ? { ...prev, cursorWorld: nearPin ? nearPin.world : world } : null
+        prev ? { ...prev, cursorWorld: nearPin ? nearPin.wp.world : world } : null
       );
       if (nearPin) {
         setLoupe({
           x: st.x,
           y: Math.max(36, st.y - (isTouch ? 48 : 22)),
-          text: nearPin.displayLabel,
+          text: nearPin.wp.displayLabel,
         });
       } else {
         setLoupe(null);
@@ -465,12 +794,41 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     const drag = dragStateRef.current;
+    if (drag?.kind === 'wire-corner') {
+      const distPx = Math.hypot(e.clientX - drag.startClient.x, e.clientY - drag.startClient.y);
+      if (drag.moved || distPx > 3) {
+        const nextWp = moveWireCorner(drag.origPts, drag.cornerIdx, snap(world.x), snap(world.y));
+        onUpdateWireWaypoints(drag.wireId, nextWp, !drag.historySaved);
+        drag.moved = true;
+        drag.historySaved = true;
+      }
+      return;
+    }
+
+    if (drag?.kind === 'wire-segment') {
+      const distPx = Math.hypot(e.clientX - drag.startClient.x, e.clientY - drag.startClient.y);
+      if (drag.moved || distPx > 3) {
+        const nextWp = moveWireSegment(drag.origPts, drag.segIdx, snap(world.x), snap(world.y));
+        onUpdateWireWaypoints(drag.wireId, nextWp, !drag.historySaved);
+        drag.moved = true;
+        drag.historySaved = true;
+      }
+      return;
+    }
+
     if (drag?.kind === 'part') {
       const dx = world.x - drag.startWorld.x;
       const dy = world.y - drag.startWorld.y;
-      if (Math.hypot(dx, dy) > 4) {
+      if (drag.moved || Math.hypot(dx, dy) > 4) {
+        onMovePart(
+          drag.partId,
+          snap(drag.origPart.x + dx),
+          snap(drag.origPart.y + dy),
+          false,
+          !drag.historySaved
+        );
         drag.moved = true;
-        onMovePart(drag.partId, snap(drag.origPart.x + dx), snap(drag.origPart.y + dy), false);
+        drag.historySaved = true;
       }
       return;
     }
@@ -488,12 +846,12 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     if (!isTouch) {
-      const nearPin = findNearestPin(e.clientX, e.clientY, false);
+      const nearPin = findNearestPinHit(e.clientX, e.clientY, PIN_CAPTURE_MOUSE_PX);
       if (nearPin) {
-        const volt = snapshot?.pinVoltages?.[nearPin.key];
+        const volt = snapshot?.pinVoltages?.[nearPin.wp.key];
         const vText = running && volt !== undefined ? ` (${volt.toFixed(2)}V)` : '';
-        setLoupe({ x: st.x, y: Math.max(28, st.y - 16), text: `${nearPin.displayLabel}${vText}` });
-        setHoveredPinKey(nearPin.key);
+        setLoupe({ x: st.x, y: Math.max(28, st.y - 16), text: `${nearPin.wp.displayLabel}${vText}` });
+        setHoveredPinKey(nearPin.wp.key);
       } else {
         if (loupe) setLoupe(null);
         if (hoveredPinKey) setHoveredPinKey(null);
@@ -510,6 +868,34 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const drag = dragStateRef.current;
     dragStateRef.current = null;
 
+    if (drag?.kind === 'wire-corner') {
+      if (!drag.moved) {
+        const now = Date.now();
+        const prev = lastCornerTapRef.current;
+        if (prev && prev.wireId === drag.wireId && prev.cornerIdx === drag.cornerIdx && now - prev.time < 360) {
+          const remaining = drag.origPts
+            .slice(1, -1)
+            .filter((_, idx) => idx !== drag.cornerIdx - 1);
+          const startPin = drag.origPts[0];
+          const endPin = drag.origPts[drag.origPts.length - 1];
+          // Avoid falling back to undefined (which re-adds default stubs) when removing the last corner
+          const nextWaypoints =
+            remaining.length > 0
+              ? remaining
+              : Math.abs(startPin.x - endPin.x) < 0.5 || Math.abs(startPin.y - endPin.y) < 0.5
+                ? [{ x: (startPin.x + endPin.x) / 2, y: (startPin.y + endPin.y) / 2 }]
+                : [{ x: endPin.x, y: startPin.y }];
+          onUpdateWireWaypoints(drag.wireId, nextWaypoints, true);
+          lastCornerTapRef.current = null;
+        } else {
+          lastCornerTapRef.current = { wireId: drag.wireId, cornerIdx: drag.cornerIdx, time: now };
+        }
+      }
+      return;
+    }
+    if (drag?.kind === 'wire-segment') {
+      return;
+    }
     if (drag?.kind === 'button') {
       onPressButton(drag.partId, false);
       return;
@@ -521,7 +907,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     if (drag?.kind === 'part') {
       if (drag.moved) {
         const p = parts.find((item) => item.id === drag.partId);
-        if (p) onMovePart(p.id, p.x, p.y, true);
+        if (p) onMovePart(p.id, p.x, p.y, true, false);
       } else if (drag.wasSelected) {
         onOpenInspector();
       }
@@ -533,7 +919,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     if (e.pointerType === 'touch') {
-      setTimeout(() => setLoupe(null), 900);
+      if (loupeTimerRef.current !== null) window.clearTimeout(loupeTimerRef.current);
+      loupeTimerRef.current = window.setTimeout(() => {
+        setLoupe(null);
+        loupeTimerRef.current = null;
+      }, 900);
     }
   };
 
@@ -557,7 +947,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const startPin = pinLookup.get(pinKey(wireDraft.from));
     if (!startPin) return '';
     const pts = routeWire(startPin.world, wireDraft.cursorWorld, {
-      startExit: rotateExitDir(startPin.pin.exitDir, startPin.part.rotation),
+      startExit: rotateExitDir(startPin.pin.exitDir, startPin.part.rotation, startPin.part.flipX, startPin.part.flipY),
       waypoints: wireDraft.waypoints,
     });
     return wirePointsToSvgPath(pts);
@@ -578,18 +968,33 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         ? t.modeMoveHint
         : mode === 'delete'
           ? t.modeDeleteHint
-          : t.modeAutoHint;
+          : selectedWireId
+            ? t.wireEditHint
+            : running
+              ? t.runningAutoHint
+              : t.modeAutoHint;
 
   const selectedPartObj = useMemo(
     () => parts.find((p) => p.id === selectedPartId) ?? null,
     [parts, selectedPartId]
   );
 
+  const selectedLabel = useMemo(() => {
+    if (selectedPartObj) {
+      return PART_MANIFEST_MAP.get(selectedPartObj.type)?.name[lang] ?? selectedPartObj.type;
+    }
+    if (selectedWireId) return t.modeWire;
+    return '';
+  }, [selectedPartObj, selectedWireId, lang, t.modeWire]);
+
+  const canDeleteSelected =
+    Boolean(selectedWireId) || (Boolean(selectedPartObj) && !isMcuBoardType(selectedPartObj!.type));
+
   return (
     <div className="canvas-stage">
-      {/* Docked single-row Canvas Toolbar (scrolls horizontally on compact/touch screens; never covers canvas) */}
+      {/* Docked Canvas Toolbar (clean 2-row grid on phone portrait, crisp single row on wide screens) */}
       <div className="canvas-toolbar">
-        <div className="toolbar-group" role="group" aria-label="Canvas interaction modes">
+        <div className="toolbar-group toolbar-modes" role="group" aria-label="Canvas interaction modes">
           <button
             type="button"
             className={`btn btn-compact ${mode === 'auto' ? 'btn-active' : ''}`}
@@ -642,9 +1047,21 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           </button>
         </div>
 
-        <div className="toolbar-group">
+        <div className="toolbar-group toolbar-actions">
           <button type="button" className="btn btn-compact btn-primary" onClick={onOpenPartPicker}>
             + {t.addPart}
+          </button>
+          <button
+            type="button"
+            className="btn btn-compact"
+            onClick={onTidyWires}
+            disabled={hasManualLayout ? wires.length === 0 : parts.length <= 1 && wires.length === 0}
+            title={hasManualLayout ? t.tidyWiresOnlyHint : t.tidyWiresHint}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{t.tidyWires}</span>
           </button>
           <button type="button" className="btn btn-compact" onClick={onUndo} disabled={!canUndo} aria-label={t.undo} title={t.undo}>
             ↶
@@ -652,22 +1069,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           <button type="button" className="btn btn-compact" onClick={onRedo} disabled={!canRedo} aria-label={t.redo} title={t.redo}>
             ↷
           </button>
-          <button
-            type="button"
-            className="btn btn-compact"
-            onClick={onTidyWires}
-            disabled={wires.length === 0}
-            title={t.tidyWiresHint}
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span>{t.tidyWires}</span>
-          </button>
-          <button type="button" className="btn btn-compact" onClick={() => zoomBy(1.18)} aria-label={t.zoomIn} title={t.zoomIn}>
+          <button type="button" className="btn btn-compact zoom-step-btn" onClick={() => zoomBy(1.18)} aria-label={t.zoomIn} title={t.zoomIn}>
             +
           </button>
-          <button type="button" className="btn btn-compact" onClick={() => zoomBy(0.85)} aria-label={t.zoomOut} title={t.zoomOut}>
+          <button type="button" className="btn btn-compact zoom-step-btn" onClick={() => zoomBy(0.85)} aria-label={t.zoomOut} title={t.zoomOut}>
             -
           </button>
           <button type="button" className="btn btn-compact" onClick={fitView} title={t.zoomFit}>
@@ -680,236 +1085,290 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       <div ref={stageRef} className="canvas-viewport">
         <svg
           className="canvas-svg"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onWheel={onWheel}
-        role="img"
-        aria-label="Arduino circuit workbench canvas"
-      >
-        <defs>
-          <pattern
-            id="workbench-pitch"
-            width={24 * view.scale}
-            height={24 * view.scale}
-            patternUnits="userSpaceOnUse"
-            x={view.x % (24 * view.scale)}
-            y={view.y % (24 * view.scale)}
-          >
-            <circle cx={1.5} cy={1.5} r={1.1} fill="var(--bg-canvas-dot)" />
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#workbench-pitch)" />
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onWheel={onWheel}
+          role="img"
+          aria-label="Arduino circuit workbench canvas"
+        >
+          <defs>
+            <pattern
+              id="workbench-pitch"
+              width={24 * view.scale}
+              height={24 * view.scale}
+              patternUnits="userSpaceOnUse"
+              x={view.x % (24 * view.scale)}
+              y={view.y % (24 * view.scale)}
+            >
+              <circle cx={1.5} cy={1.5} r={1.1} fill="var(--bg-canvas-dot)" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#workbench-pitch)" />
 
-        <g transform={`translate(${view.x}, ${view.y}) scale(${view.scale})`}>
-          {sortedParts.map((part) => {
-            const manifest = PART_MANIFEST_MAP.get(part.type);
-            if (!manifest) return null;
-            const cx = manifest.width / 2;
-            const cy = manifest.height / 2;
-            return (
-              <g
-                key={part.id}
-                transform={`translate(${part.x}, ${part.y}) rotate(${part.rotation} ${cx} ${cy})`}
-                style={{ cursor: mode === 'wire' ? 'crosshair' : mode === 'delete' ? 'not-allowed' : 'grab' }}
-              >
-                <PartGraphics
-                  part={part}
-                  manifest={manifest}
-                  snapshot={snapshot}
-                  pressed={pressedButtons.has(part.id)}
-                  pressedKeypadKeys={pressedKeypadKeys}
-                  selected={selectedPartId === part.id}
-                />
-              </g>
-            );
-          })}
-
-          {wires.map((wire, index) => {
-            const fromPin = pinLookup.get(pinKey(wire.from));
-            const toPin = pinLookup.get(pinKey(wire.to));
-            if (!fromPin || !toPin) return null;
-            const pts = routeWire(fromPin.world, toPin.world, {
-              startExit: rotateExitDir(fromPin.pin.exitDir, fromPin.part.rotation),
-              endExit: rotateExitDir(toPin.pin.exitDir, toPin.part.rotation),
-              waypoints: wire.waypoints,
-              laneIndex: index,
-            });
-            const d = wirePointsToSvgPath(pts);
-            const isSelected = selectedWireId === wire.id;
-            const inSameNet =
-              highlightedNet !== null && netlist.pinToNet.get(pinKey(wire.from)) === highlightedNet;
-
-            return (
-              <g key={wire.id}>
-                <path
-                  d={d}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={22 / view.scale}
-                  style={{ cursor: mode === 'delete' ? 'not-allowed' : 'pointer' }}
-                  onPointerDown={(ev) => {
-                    // Bug #1 fix: never let a wire hit-stroke steal taps intended for nearby pins or active wiring
-                    if (wireDraft || mode === 'wire') return;
-                    const nearPin = findNearestPin(ev.clientX, ev.clientY, ev.pointerType === 'touch');
-                    if (nearPin && mode !== 'delete') return;
-                    ev.stopPropagation();
-                    if (mode === 'delete') {
-                      onDeleteWire(wire.id);
-                    } else {
-                      onSelectWire(wire.id);
-                    }
-                  }}
-                />
-                {(isSelected || inSameNet) && (
-                  <path
-                    d={d}
-                    fill="none"
-                    stroke="var(--accent)"
-                    strokeWidth={7.5}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    opacity={0.45}
-                    pointerEvents="none"
-                  />
-                )}
-                <path
-                  d={d}
-                  fill="none"
-                  stroke={wire.color}
-                  strokeWidth={3.4}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  pointerEvents="none"
-                />
-                <circle cx={fromPin.world.x} cy={fromPin.world.y} r={3.6} fill={wire.color} stroke="#FFFFFF" strokeWidth={1} pointerEvents="none" />
-                <circle cx={toPin.world.x} cy={toPin.world.y} r={3.6} fill={wire.color} stroke="#FFFFFF" strokeWidth={1} pointerEvents="none" />
-              </g>
-            );
-          })}
-
-          {highlightedNet &&
-            (netlist.netToPins.get(highlightedNet) ?? []).map((key) => {
-              const wp = pinLookup.get(key);
-              if (!wp) return null;
+          <g transform={`translate(${view.x}, ${view.y}) scale(${view.scale})`}>
+            {sortedParts.map((part) => {
+              const manifest = PART_MANIFEST_MAP.get(part.type);
+              if (!manifest) return null;
+              const cx = manifest.width / 2;
+              const cy = manifest.height / 2;
+              const sx = part.flipX ? -1 : 1;
+              const sy = part.flipY ? -1 : 1;
+              const partTransform =
+                part.flipX || part.flipY
+                  ? `translate(${part.x + cx}, ${part.y + cy}) scale(${sx}, ${sy}) rotate(${part.rotation}) translate(${-cx}, ${-cy})`
+                  : `translate(${part.x}, ${part.y}) rotate(${part.rotation} ${cx} ${cy})`;
+              const isSwapped = part.rotation === 90 || part.rotation === 270;
+              const unflipClass = [
+                (isSwapped ? part.flipY : part.flipX) ? 'part-unflip-x' : '',
+                (isSwapped ? part.flipX : part.flipY) ? 'part-unflip-y' : '',
+              ]
+                .filter(Boolean)
+                .join(' ');
               return (
-                <circle
-                  key={`net-${key}`}
-                  cx={wp.world.x}
-                  cy={wp.world.y}
-                  r={5.5}
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeWidth={2}
-                  pointerEvents="none"
-                />
+                <g
+                  key={part.id}
+                  className={unflipClass || undefined}
+                  transform={partTransform}
+                  style={{ cursor: mode === 'wire' ? 'crosshair' : mode === 'delete' ? 'not-allowed' : 'grab' }}
+                >
+                  <PartGraphics
+                    part={part}
+                    manifest={manifest}
+                    snapshot={snapshot}
+                    pressed={pressedButtons.has(part.id)}
+                    pressedKeypadKeys={pressedKeypadKeys}
+                    selected={selectedPartId === part.id}
+                  />
+                </g>
               );
             })}
 
-          {wireDraft && draftPath && (
-            <g pointerEvents="none">
-              <path
-                d={draftPath}
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth={3.2}
-                strokeDasharray="6 4"
-                strokeLinecap="round"
-              />
-              {wireDraft.waypoints.map((pt, idx) => (
-                <circle key={idx} cx={pt.x} cy={pt.y} r={4} fill="var(--accent)" />
-              ))}
-            </g>
-          )}
+            {routedWires.map(({ wire, fromPin, toPin, d }) => {
+              const isSelected = selectedWireId === wire.id;
+              const inSameNet =
+                highlightedNet !== null && netlist.pinToNet.get(pinKey(wire.from)) === highlightedNet;
 
-          {(mode === 'wire' || wireDraft) &&
-            worldPins
-              .filter((wp) => wp.part.type !== 'breadboard-half')
-              .map((wp) => (
-                <circle
-                  key={`anchor-${wp.key}`}
-                  cx={wp.world.x}
-                  cy={wp.world.y}
-                  r={4.2}
-                  fill="var(--primary)"
-                  opacity={0.5}
-                  pointerEvents="none"
+              return (
+                <g key={wire.id} pointerEvents="none">
+                  {(isSelected || inSameNet) && (
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke="var(--accent)"
+                      strokeWidth={7.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={0.45}
+                    />
+                  )}
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke={wire.color}
+                    strokeWidth={3.4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx={fromPin.world.x} cy={fromPin.world.y} r={3.6} fill={wire.color} stroke="#FFFFFF" strokeWidth={1} />
+                  <circle cx={toPin.world.x} cy={toPin.world.y} r={3.6} fill={wire.color} stroke="#FFFFFF" strokeWidth={1} />
+                </g>
+              );
+            })}
+
+            {selectedRoutedWire && !wireDraft && mode !== 'delete' && mode !== 'wire' && (
+              <g pointerEvents="none">
+                {/* Segment midpoint handles: drag to slide segment or insert a new orthogonal bend */}
+                {selectedRoutedWire.pts.slice(0, -1).map((a, idx) => {
+                  const b = selectedRoutedWire.pts[idx + 1];
+                  if (Math.hypot((b.x - a.x) * view.scale, (b.y - a.y) * view.scale) < 24) return null;
+                  const mx = (a.x + b.x) / 2;
+                  const my = (a.y + b.y) / 2;
+                  const r = Math.max(3.8, Math.min(7, 4.8 / view.scale));
+                  return (
+                    <g key={`seg-h-${idx}`}>
+                      <circle
+                        cx={mx}
+                        cy={my}
+                        r={r}
+                        fill="var(--bg-surface)"
+                        stroke="var(--primary)"
+                        strokeWidth={Math.max(1.5, 1.8 / view.scale)}
+                      />
+                      <circle
+                        cx={mx}
+                        cy={my}
+                        r={r * 0.35}
+                        fill="var(--primary)"
+                      />
+                    </g>
+                  );
+                })}
+                {/* Corner handles: drag to reposition bend, double-tap to delete corner */}
+                {selectedRoutedWire.pts.slice(1, -1).map((pt, idx) => {
+                  const r = Math.max(4.6, Math.min(8.5, 5.8 / view.scale));
+                  return (
+                    <circle
+                      key={`cor-h-${idx}`}
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={r}
+                      fill="var(--bg-surface)"
+                      stroke="var(--accent)"
+                      strokeWidth={Math.max(2, 2.3 / view.scale)}
+                    />
+                  );
+                })}
+              </g>
+            )}
+
+            {highlightedNet &&
+              (netlist.netToPins.get(highlightedNet) ?? []).map((key) => {
+                const wp = pinLookup.get(key);
+                if (!wp) return null;
+                return (
+                  <circle
+                    key={`net-${key}`}
+                    cx={wp.world.x}
+                    cy={wp.world.y}
+                    r={5.5}
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth={2}
+                    pointerEvents="none"
+                  />
+                );
+              })}
+
+            {wireDraft && draftPath && (
+              <g pointerEvents="none">
+                <path
+                  d={draftPath}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth={3.2}
+                  strokeDasharray="6 4"
+                  strokeLinecap="round"
                 />
-              ))}
-        </g>
-      </svg>
+                {wireDraft.waypoints.map((pt, idx) => (
+                  <circle key={idx} cx={pt.x} cy={pt.y} r={4} fill="var(--accent)" />
+                ))}
+              </g>
+            )}
 
-      {/* Empty canvas state card (R-27) */}
-      {parts.length === 0 && (
-        <div className="canvas-empty-overlay">
-          <div className="canvas-empty-card">
-            <div className="canvas-empty-title">{t.canvasEmptyTitle}</div>
-            <div className="canvas-empty-desc">{t.canvasEmptyDesc}</div>
-            <div className="canvas-empty-actions">
-              <button type="button" className="btn btn-primary" onClick={onOpenPartPicker}>
-                + {t.addPart}
-              </button>
-              <button type="button" className="btn" onClick={onOpenFileMenu}>
-                {t.openFileMenu}
-              </button>
+            {(mode === 'wire' || wireDraft) &&
+              worldPins
+                .filter((wp) => wp.part.type !== 'breadboard-half')
+                .map((wp) => (
+                  <circle
+                    key={`anchor-${wp.key}`}
+                    cx={wp.world.x}
+                    cy={wp.world.y}
+                    r={4.2}
+                    fill="var(--primary)"
+                    opacity={0.55}
+                    pointerEvents="none"
+                  />
+                ))}
+          </g>
+        </svg>
+
+        {/* Empty canvas state card */}
+        {parts.length === 0 && (
+          <div className="canvas-empty-overlay">
+            <div className="canvas-empty-card">
+              <div className="canvas-empty-title">{t.canvasEmptyTitle}</div>
+              <div className="canvas-empty-desc">{t.canvasEmptyDesc}</div>
+              <div className="canvas-empty-actions">
+                <button type="button" className="btn btn-primary" onClick={onOpenPartPicker}>
+                  + {t.addPart}
+                </button>
+                <button type="button" className="btn" onClick={onOpenFileMenu}>
+                  {t.openFileMenu}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {loupe && (
-        <div className="pin-loupe" style={{ left: loupe.x, top: loupe.y }}>
-          {loupe.text}
-        </div>
-      )}
+        {loupe && (
+          <div className="pin-loupe" style={{ left: loupe.x, top: loupe.y }}>
+            {loupe.text}
+          </div>
+        )}
 
-      {/* Compact floating quick-action bar for touch/tablet when a part or wire is selected */}
-      {!wireDraft && (selectedPartObj || selectedWireId) && (
-        <div className="selection-pill" role="toolbar" aria-label={t.inspector}>
-          <button type="button" className="btn btn-compact btn-primary" onClick={onOpenInspector}>
-            {t.inspector}
-          </button>
-          {selectedPartObj && !isMcuBoardType(selectedPartObj.type) && (
+        {/* Quick-action bar when a part or wire is selected and Inspector is closed */}
+        {!wireDraft && !inspectorOpen && (selectedPartObj || selectedWireId) && (
+          <div className="selection-pill" role="toolbar" aria-label={t.inspector}>
+            {selectedLabel && <span className="selection-pill-label">{selectedLabel}</span>}
+            <button type="button" className="btn btn-compact btn-primary" onClick={onOpenInspector}>
+              {t.inspector}
+            </button>
+            {selectedPartObj && (
+              <>
+                <button
+                  type="button"
+                  className={`btn btn-compact ${selectedPartObj.flipX ? 'btn-active' : ''}`}
+                  onClick={() => onFlipPart(selectedPartObj.id, 'x')}
+                  aria-label={t.flipH}
+                  title={t.flipH}
+                >
+                  ⇄
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-compact ${selectedPartObj.flipY ? 'btn-active' : ''}`}
+                  onClick={() => onFlipPart(selectedPartObj.id, 'y')}
+                  aria-label={t.flipV}
+                  title={t.flipV}
+                >
+                  ⇅
+                </button>
+              </>
+            )}
+            {selectedPartObj && !isMcuBoardType(selectedPartObj.type) && (
+              <button
+                type="button"
+                className="btn btn-compact"
+                onClick={() => onRotatePart(selectedPartObj.id)}
+                aria-label={t.rotate}
+                title={t.rotate}
+              >
+                ↻
+              </button>
+            )}
+            {canDeleteSelected && (
+              <button
+                type="button"
+                className="btn btn-compact btn-danger"
+                onClick={() => {
+                  if (selectedPartObj) onDeletePart(selectedPartObj.id);
+                  else if (selectedWireId) onDeleteWire(selectedWireId);
+                }}
+                aria-label={t.deleteSelected}
+                title={t.deleteSelected}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
+
+        {wireDraft ? (
+          <div className="wiring-banner" role="status" aria-live="polite">
+            <span>{t.wiringPrompt(wireDraft.fromLabel)}</span>
             <button
               type="button"
               className="btn btn-compact"
-              onClick={() => onRotatePart(selectedPartObj.id)}
-              aria-label={t.rotate}
-              title={t.rotate}
+              onClick={() => setWireDraft(null)}
             >
-              ↻
+              {t.cancelWire}
             </button>
-          )}
-          <button
-            type="button"
-            className="btn btn-compact btn-danger"
-            onClick={() => {
-              if (selectedPartObj) onDeletePart(selectedPartObj.id);
-              else if (selectedWireId) onDeleteWire(selectedWireId);
-            }}
-            aria-label={t.deleteSelected}
-            title={t.deleteSelected}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {wireDraft ? (
-        <div className="wiring-banner" role="status" aria-live="polite">
-          <span>{t.wiringPrompt(wireDraft.fromLabel)}</span>
-          <button
-            type="button"
-            className="btn btn-compact"
-            onClick={() => setWireDraft(null)}
-          >
-            {t.cancelWire}
-          </button>
-        </div>
-      ) : (
-        <div className="canvas-hint-bar">{activeModeHint}</div>
-      )}
+          </div>
+        ) : (
+          <div className="canvas-hint-bar">{activeModeHint}</div>
+        )}
       </div>
     </div>
   );

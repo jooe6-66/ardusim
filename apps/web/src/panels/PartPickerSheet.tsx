@@ -36,6 +36,7 @@ export const PartPickerSheet: React.FC<PartPickerSheetProps> = ({
 
   const q = query.trim().toLowerCase();
   const items = PART_CATALOG.filter((item) => {
+    if (item.category === 'mcu') return false;
     if (category !== 'all' && item.category !== category) return false;
     if (!q) return true;
     return (
@@ -47,7 +48,6 @@ export const PartPickerSheet: React.FC<PartPickerSheetProps> = ({
 
   const cats: Array<{ id: FilterCat; label: string }> = [
     { id: 'all', label: t.catAll },
-    { id: 'mcu', label: t.catMcu },
     { id: 'breadboard', label: t.catBreadboard },
     { id: 'passive', label: t.catPassive },
     { id: 'sensor', label: t.catSensor },

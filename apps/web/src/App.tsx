@@ -7,6 +7,7 @@ import {
   Point,
   SimSnapshot,
   Wire,
+  autoTidyCircuit,
   autoTidyWires,
   isMcuBoardType,
   parseIntelHex,
@@ -37,6 +38,7 @@ interface CircuitHistoryState {
   board: BoardId;
   parts: PartInstance[];
   wires: Wire[];
+  hasManualLayout: boolean;
 }
 
 function makeId(prefix: string): string {
@@ -50,6 +52,108 @@ function downloadText(filename: string, content: string, mime: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function isLocalCompilerUrl(url: string): boolean {
+  if (!url) return true;
+  try {
+    const host = new URL(url).hostname;
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host === '[::1]' ||
+      host.startsWith('192.168.') ||
+      host.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    );
+  } catch {
+    return true;
+  }
+}
+
+function tidyUnroutedWires(parts: PartInstance[], wires: Wire[]): Wire[] {
+  if (wires.length === 0 || wires.every((w) => Array.isArray(w.waypoints) && w.waypoints.length > 0)) {
+    return wires;
+  }
+  const tidiedAll = autoTidyWires(parts, wires, PART_MANIFEST_MAP);
+  return wires.map((w) => {
+    if (Array.isArray(w.waypoints) && w.waypoints.length > 0) return w;
+    return tidiedAll.find((tw) => tw.id === w.id) ?? w;
+  });
+}
+
+function sanitizeImportedDiagram(raw: unknown): { parts: PartInstance[]; wires: Wire[] } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (!Array.isArray(obj.parts) || !Array.isArray(obj.wires)) return null;
+
+  const validRotations = new Set([0, 90, 180, 270]);
+  const parts: PartInstance[] = [];
+  for (const item of obj.parts) {
+    if (!item || typeof item !== 'object') return null;
+    const p = item as Record<string, unknown>;
+    if (typeof p.id !== 'string' || !p.id || typeof p.type !== 'string' || !p.type) return null;
+    if (typeof p.x !== 'number' || !Number.isFinite(p.x) || typeof p.y !== 'number' || !Number.isFinite(p.y)) {
+      return null;
+    }
+    const rotation = (validRotations.has(Number(p.rotation)) ? Number(p.rotation) : 0) as PartInstance['rotation'];
+    const props = p.props && typeof p.props === 'object' && !Array.isArray(p.props)
+      ? (p.props as Record<string, unknown>)
+      : {};
+    parts.push({
+      id: p.id,
+      type: p.type,
+      x: p.x,
+      y: p.y,
+      rotation,
+      flipX: p.flipX === true ? true : undefined,
+      flipY: p.flipY === true ? true : undefined,
+      props,
+    });
+  }
+
+  const wires: Wire[] = [];
+  for (const item of obj.wires) {
+    if (!item || typeof item !== 'object') return null;
+    const w = item as Record<string, unknown>;
+    const from = w.from as Record<string, unknown> | undefined;
+    const to = w.to as Record<string, unknown> | undefined;
+    if (
+      typeof w.id !== 'string' ||
+      !w.id ||
+      !from ||
+      typeof from.partId !== 'string' ||
+      typeof from.pinId !== 'string' ||
+      !to ||
+      typeof to.partId !== 'string' ||
+      typeof to.pinId !== 'string'
+    ) {
+      return null;
+    }
+    let waypoints: Point[] | undefined;
+    if (Array.isArray(w.waypoints)) {
+      const validPts: Point[] = [];
+      for (const pt of w.waypoints) {
+        if (!pt || typeof pt !== 'object') return null;
+        const { x, y } = pt as Record<string, unknown>;
+        if (typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) {
+          return null;
+        }
+        validPts.push({ x, y });
+      }
+      if (validPts.length > 0) waypoints = validPts;
+    }
+    wires.push({
+      id: w.id,
+      from: { partId: from.partId, pinId: from.pinId },
+      to: { partId: to.partId, pinId: to.pinId },
+      color: typeof w.color === 'string' && w.color ? w.color : '#0F6660',
+      waypoints,
+    });
+  }
+
+  return { parts, wires };
 }
 
 async function compileWithWakeRetry(
@@ -71,11 +175,11 @@ async function compileWithWakeRetry(
     const first = await postCompile();
     if (isJson(first)) return first;
   } catch {
-    if (!COMPILER_BASE || navigator.onLine === false) throw new Error('offline');
+    if (isLocalCompilerUrl(COMPILER_BASE) || navigator.onLine === false) throw new Error('offline');
   }
 
   // Only poll wake-up for remote cloud compilers (SnapDeploy / Render / HF) that sleep on idle
-  if (!COMPILER_BASE || navigator.onLine === false) {
+  if (isLocalCompilerUrl(COMPILER_BASE) || navigator.onLine === false) {
     throw new Error('offline');
   }
 
@@ -100,13 +204,24 @@ async function compileWithWakeRetry(
   throw new Error('offline');
 }
 
+function createDefaultBoardPart(board: BoardId): PartInstance {
+  return {
+    id: 'mcu1',
+    type: board,
+    x: 48,
+    y: 156,
+    rotation: 0,
+    props: {},
+  };
+}
+
 function createBlankDiagram(lang: Lang, board: BoardId = 'arduino-uno'): CircuitDiagram {
   return {
     version: 1,
     id: makeId('proj-'),
     name: lang === 'id' ? 'Proyek Baru' : 'Untitled Project',
     board,
-    parts: [],
+    parts: [createDefaultBoardPart(board)],
     wires: [],
     sketch: '',
     updatedAt: Date.now(),
@@ -133,6 +248,7 @@ export const App: React.FC = () => {
   );
   const [undoStack, setUndoStack] = useState<CircuitHistoryState[]>([]);
   const [redoStack, setRedoStack] = useState<CircuitHistoryState[]>([]);
+  const [hasManualLayout, setHasManualLayout] = useState(() => Boolean(initialDraft?.hasManualLayout));
 
   const [mode, setMode] = useState<CanvasToolMode>('auto');
   const [mobileTab, setMobileTab] = useState<'circuit' | 'code' | 'serial'>('circuit');
@@ -165,8 +281,8 @@ export const App: React.FC = () => {
 
   const workerRef = useRef<Worker | null>(null);
   const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null>(null);
-  const latestDraftRef = useRef({ diagram, overrideHex });
-  latestDraftRef.current = { diagram, overrideHex };
+  const latestDraftRef = useRef({ diagram, overrideHex, hasManualLayout });
+  latestDraftRef.current = { diagram, overrideHex, hasManualLayout };
   const t = MESSAGES[lang];
 
   useEffect(() => {
@@ -176,17 +292,36 @@ export const App: React.FC = () => {
     localStorage.setItem('ardusim_lang', lang);
   }, [theme, lang]);
 
+  // Sync tablet split-code panel when rotating iPad/tablet across portrait <-> landscape
+  useEffect(() => {
+    let lastWide = window.innerWidth >= 900;
+    const onResize = () => {
+      const w = window.innerWidth;
+      const wide = w >= 900;
+      if (w >= 720 && w < 1100 && wide !== lastWide) {
+        setTabletShowCode(wide);
+      }
+      lastWide = wide;
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // Auto-persist active workspace in localStorage so page refresh keeps current project
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      saveWorkspaceDraft(diagram, overrideHex);
+      saveWorkspaceDraft(diagram, overrideHex, hasManualLayout);
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [diagram, overrideHex]);
+  }, [diagram, overrideHex, hasManualLayout]);
 
   useEffect(() => {
     const flushDraft = () => {
-      saveWorkspaceDraft(latestDraftRef.current.diagram, latestDraftRef.current.overrideHex);
+      saveWorkspaceDraft(
+        latestDraftRef.current.diagram,
+        latestDraftRef.current.overrideHex,
+        latestDraftRef.current.hasManualLayout
+      );
     };
     window.addEventListener('pagehide', flushDraft);
     window.addEventListener('beforeunload', flushDraft);
@@ -274,29 +409,37 @@ export const App: React.FC = () => {
   }, [running, diagram.parts, diagram.wires, pressedButtons, pressedKeypadKeys]);
 
   const commitHistory = useCallback(
-    (prevBoard: BoardId, prevParts: PartInstance[], prevWires: Wire[]) => {
+    (prevBoard: BoardId, prevParts: PartInstance[], prevWires: Wire[], prevManual = hasManualLayout) => {
       setUndoStack((stack) => [
         ...stack.slice(-39),
-        { board: prevBoard, parts: prevParts, wires: prevWires },
+        { board: prevBoard, parts: prevParts, wires: prevWires, hasManualLayout: prevManual },
       ]);
       setRedoStack([]);
     },
-    []
+    [hasManualLayout]
   );
 
   const handleUndo = () => {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack((r) => [...r, { board: diagram.board, parts: diagram.parts, wires: diagram.wires }]);
+    setRedoStack((r) => [
+      ...r,
+      { board: diagram.board, parts: diagram.parts, wires: diagram.wires, hasManualLayout },
+    ]);
     setUndoStack((u) => u.slice(0, -1));
+    setHasManualLayout(prev.hasManualLayout);
     setDiagram((d) => ({ ...d, board: prev.board, parts: prev.parts, wires: prev.wires }));
   };
 
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
-    setUndoStack((u) => [...u, { board: diagram.board, parts: diagram.parts, wires: diagram.wires }]);
+    setUndoStack((u) => [
+      ...u,
+      { board: diagram.board, parts: diagram.parts, wires: diagram.wires, hasManualLayout },
+    ]);
     setRedoStack((r) => r.slice(0, -1));
+    setHasManualLayout(next.hasManualLayout);
     setDiagram((d) => ({ ...d, board: next.board, parts: next.parts, wires: next.wires }));
   };
 
@@ -308,7 +451,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleBoardSwitch = (nextBoard: BoardId) => {
-    if (nextBoard === diagram.board) return;
+    if (nextBoard === diagram.board && diagram.parts.some((p) => isMcuBoardType(p.type))) return;
     handleStop();
     commitHistory(diagram.board, diagram.parts, diagram.wires);
     const nextManifest = PART_MANIFEST_MAP.get(nextBoard);
@@ -318,27 +461,36 @@ export const App: React.FC = () => {
     const mcuId = oldMcu?.id ?? 'mcu1';
     const nextParts = oldMcu
       ? diagram.parts.map((p) => (p.id === oldMcu.id ? { ...p, type: nextBoard } : p))
-      : diagram.parts;
+      : [createDefaultBoardPart(nextBoard), ...diagram.parts];
 
-    // Keep wires whose endpoints remain valid on the new board
-    const nextWires = oldMcu
+    // Keep wires whose endpoints remain valid on the new board, then re-tidy around new geometry
+    const filteredWires = oldMcu
       ? diagram.wires.filter((w) => {
           if (w.from.partId === mcuId && !validPins.has(w.from.pinId)) return false;
           if (w.to.partId === mcuId && !validPins.has(w.to.pinId)) return false;
           return true;
         })
       : diagram.wires;
+    const nextWires = autoTidyWires(nextParts, filteredWires, PART_MANIFEST_MAP);
 
     setOverrideHex(null);
     setDiagram((d) => ({ ...d, board: nextBoard, parts: nextParts, wires: nextWires }));
-    if (oldMcu) setFitTrigger((n) => n + 1);
+    setFitTrigger((n) => n + 1);
   };
 
   const handleTidyWires = () => {
-    if (diagram.wires.length === 0) return;
+    if (hasManualLayout) {
+      if (diagram.wires.length === 0) return;
+      commitHistory(diagram.board, diagram.parts, diagram.wires);
+      const tidiedWires = autoTidyWires(diagram.parts, diagram.wires, PART_MANIFEST_MAP);
+      setDiagram((d) => ({ ...d, wires: tidiedWires }));
+      return;
+    }
+    if (diagram.parts.length <= 1 && diagram.wires.length === 0) return;
     commitHistory(diagram.board, diagram.parts, diagram.wires);
-    const tidied = autoTidyWires(diagram.parts, diagram.wires, PART_MANIFEST_MAP);
-    setDiagram((d) => ({ ...d, wires: tidied }));
+    const tidied = autoTidyCircuit(diagram.parts, diagram.wires, PART_MANIFEST_MAP);
+    setDiagram((d) => ({ ...d, parts: tidied.parts, wires: tidied.wires }));
+    setFitTrigger((n) => n + 1);
   };
 
   const startWithHex = useCallback(
@@ -487,9 +639,18 @@ export const App: React.FC = () => {
     if (isDesktopViewport()) setInspectorOpen(true);
   };
 
-  const handleMovePart = (partId: string, x: number, y: number, commit: boolean) => {
-    if (commit) {
+  const handleMovePart = (
+    partId: string,
+    x: number,
+    y: number,
+    commit: boolean,
+    recordHistory = false
+  ) => {
+    if (recordHistory) {
       commitHistory(diagram.board, diagram.parts, diagram.wires);
+    }
+    if (commit) {
+      setHasManualLayout(true);
     }
     setDiagram((d) => {
       const nextParts = d.parts.map((p) => (p.id === partId ? { ...p, x, y } : p));
@@ -552,18 +713,47 @@ export const App: React.FC = () => {
   };
 
   const handleRotatePart = (partId: string) => {
+    const target = diagram.parts.find((p) => p.id === partId);
+    if (!target || isMcuBoardType(target.type)) return;
     commitHistory(diagram.board, diagram.parts, diagram.wires);
-    setDiagram((d) => ({
-      ...d,
-      parts: d.parts.map((p) =>
+    setDiagram((d) => {
+      const nextParts = d.parts.map((p) =>
         p.id === partId
           ? { ...p, rotation: (((p.rotation + 90) % 360) as PartInstance['rotation']) }
           : p
-      ),
-    }));
+      );
+      const tidiedAll = autoTidyWires(nextParts, d.wires, PART_MANIFEST_MAP);
+      const nextWires = d.wires.map((w) => {
+        if (w.from.partId === partId || w.to.partId === partId) {
+          return tidiedAll.find((tw) => tw.id === w.id) ?? w;
+        }
+        return w;
+      });
+      return { ...d, parts: nextParts, wires: nextWires };
+    });
+  };
+
+  const handleFlipPart = (partId: string, axis: 'x' | 'y') => {
+    commitHistory(diagram.board, diagram.parts, diagram.wires);
+    setDiagram((d) => {
+      const nextParts = d.parts.map((p) => {
+        if (p.id !== partId) return p;
+        return axis === 'x' ? { ...p, flipX: !p.flipX } : { ...p, flipY: !p.flipY };
+      });
+      const tidiedAll = autoTidyWires(nextParts, d.wires, PART_MANIFEST_MAP);
+      const nextWires = d.wires.map((w) => {
+        if (w.from.partId === partId || w.to.partId === partId) {
+          return tidiedAll.find((tw) => tw.id === w.id) ?? w;
+        }
+        return w;
+      });
+      return { ...d, parts: nextParts, wires: nextWires };
+    });
   };
 
   const handleDeletePart = (partId: string) => {
+    const target = diagram.parts.find((p) => p.id === partId);
+    if (target && isMcuBoardType(target.type)) return;
     commitHistory(diagram.board, diagram.parts, diagram.wires);
     setDiagram((d) => ({
       ...d,
@@ -590,6 +780,34 @@ export const App: React.FC = () => {
       ...d,
       wires: d.wires.map((w) => (w.id === wireId ? { ...w, color } : w)),
     }));
+  };
+
+  const handleUpdateWireWaypoints = (
+    wireId: string,
+    waypoints: Point[] | undefined,
+    recordHistory: boolean
+  ) => {
+    if (recordHistory) {
+      commitHistory(diagram.board, diagram.parts, diagram.wires);
+    }
+    setDiagram((d) => ({
+      ...d,
+      wires: d.wires.map((w) =>
+        w.id === wireId ? { ...w, waypoints: waypoints && waypoints.length > 0 ? waypoints : undefined } : w
+      ),
+    }));
+  };
+
+  const handleResetWireShape = (wireId: string) => {
+    commitHistory(diagram.board, diagram.parts, diagram.wires);
+    setDiagram((d) => {
+      const tidied = autoTidyWires(d.parts, d.wires, PART_MANIFEST_MAP);
+      const resetWire = tidied.find((w) => w.id === wireId);
+      return {
+        ...d,
+        wires: d.wires.map((w) => (w.id === wireId && resetWire ? resetWire : w)),
+      };
+    });
   };
 
   const handlePressButton = (partId: string, pressed: boolean) => {
@@ -671,6 +889,15 @@ export const App: React.FC = () => {
 
           <button
             type="button"
+            className={`btn btn-compact inspector-toggle-btn ${inspectorOpen ? 'btn-active' : ''}`}
+            onClick={() => setInspectorOpen((v) => !v)}
+            aria-pressed={inspectorOpen}
+          >
+            {t.inspector}
+          </button>
+
+          <button
+            type="button"
             className={`btn ${running ? 'btn-accent' : 'btn-primary'}`}
             onClick={handleRun}
             disabled={compiling}
@@ -680,7 +907,7 @@ export const App: React.FC = () => {
 
           <button
             type="button"
-            className="btn btn-compact"
+            className="btn btn-compact header-secondary-btn"
             onClick={() => setLang((l) => (l === 'id' ? 'en' : 'id'))}
             aria-label="Toggle language ID/EN"
             title="ID / EN"
@@ -690,7 +917,7 @@ export const App: React.FC = () => {
 
           <button
             type="button"
-            className="btn btn-compact"
+            className="btn btn-compact header-secondary-btn"
             onClick={() => setTheme((th) => (th === 'light' ? 'dark' : 'light'))}
             aria-label={theme === 'light' ? t.themeDark : t.themeLight}
             title={theme === 'light' ? t.themeDark : t.themeLight}
@@ -775,7 +1002,9 @@ export const App: React.FC = () => {
               onSelectWire={handleSelectWire}
               onMovePart={handleMovePart}
               onRotatePart={handleRotatePart}
+              onFlipPart={handleFlipPart}
               onAddWire={handleAddWire}
+              onUpdateWireWaypoints={handleUpdateWireWaypoints}
               onDeleteWire={handleDeleteWire}
               onDeletePart={handleDeletePart}
               onPressButton={handlePressButton}
@@ -787,10 +1016,13 @@ export const App: React.FC = () => {
               onUndo={handleUndo}
               onRedo={handleRedo}
               onTidyWires={handleTidyWires}
+              hasManualLayout={hasManualLayout}
               fitTrigger={fitTrigger}
+              inspectorOpen={inspectorOpen}
               onOpenPartPicker={() => setPartPickerOpen(true)}
               onOpenFileMenu={() => setProjectMenuOpen(true)}
               onOpenInspector={() => setInspectorOpen(true)}
+              lang={lang}
               t={t}
             />
           </section>
@@ -817,8 +1049,10 @@ export const App: React.FC = () => {
               onToggleBuzzerAudio={() => setBuzzerAudioEnabled((v) => !v)}
               onUpdatePartProps={handleUpdatePartProps}
               onRotatePart={handleRotatePart}
+              onFlipPart={handleFlipPart}
               onDeletePart={handleDeletePart}
               onUpdateWireColor={handleUpdateWireColor}
+              onResetWireShape={handleResetWireShape}
               onDeleteWire={handleDeleteWire}
               onPressButton={handlePressButton}
               onPressKeypadKey={handlePressKeypadKey}
@@ -861,7 +1095,10 @@ export const App: React.FC = () => {
             type="button"
             className={`nav-tab-btn ${mobileTab === 'code' ? 'active' : ''}`}
             aria-current={mobileTab === 'code' ? 'page' : undefined}
-            onClick={() => setMobileTab('code')}
+            onClick={() => {
+              setInspectorOpen(false);
+              setMobileTab('code');
+            }}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M5.5 4.5L2 8L5.5 11.5M10.5 4.5L14 8L10.5 11.5M9 3L7 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -872,7 +1109,10 @@ export const App: React.FC = () => {
             type="button"
             className={`nav-tab-btn ${mobileTab === 'serial' ? 'active' : ''}`}
             aria-current={mobileTab === 'serial' ? 'page' : undefined}
-            onClick={() => setMobileTab('serial')}
+            onClick={() => {
+              setInspectorOpen(false);
+              setMobileTab('serial');
+            }}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <rect x="2" y="3" width="12" height="10" rx="1.8" stroke="currentColor" strokeWidth="1.4" />
@@ -900,6 +1140,7 @@ export const App: React.FC = () => {
         onNewBlank={() => {
           handleStop();
           setDiagram(createBlankDiagram(lang, diagram.board));
+          setHasManualLayout(false);
           setOverrideHex(null);
           setUndoStack([]);
           setRedoStack([]);
@@ -922,8 +1163,10 @@ export const App: React.FC = () => {
         }}
         onLoadDiagram={(loaded, precompiledHex) => {
           handleStop();
-          const cleanedWires = autoTidyWires(loaded.parts, loaded.wires, PART_MANIFEST_MAP);
-          setDiagram({ ...structuredClone(loaded), wires: cleanedWires });
+          const cloned = structuredClone(loaded);
+          const cleanedWires = tidyUnroutedWires(cloned.parts, cloned.wires);
+          setDiagram({ ...cloned, wires: cleanedWires });
+          setHasManualLayout(false);
           setOverrideHex(precompiledHex ?? null);
           setUndoStack([]);
           setRedoStack([]);
@@ -942,15 +1185,17 @@ export const App: React.FC = () => {
         }}
         onImportJson={(text) => {
           try {
-            const parsed = JSON.parse(text) as CircuitDiagram;
-            if (!Array.isArray(parsed.parts) || !Array.isArray(parsed.wires)) return false;
+            const parsed = JSON.parse(text) as Partial<CircuitDiagram>;
+            const sanitized = sanitizeImportedDiagram(parsed);
+            if (!sanitized) return false;
             handleStop();
-            const board: BoardId = isMcuBoardType(parsed.board) ? parsed.board : 'arduino-uno';
-            const cleanedWires = autoTidyWires(parsed.parts, parsed.wires, PART_MANIFEST_MAP);
+            const board: BoardId = isMcuBoardType(String(parsed.board ?? ''))
+              ? (parsed.board as BoardId)
+              : 'arduino-uno';
+            const cleanedWires = tidyUnroutedWires(sanitized.parts, sanitized.wires);
             setDiagram({
-              ...parsed,
               version: 1,
-              id: parsed.id || makeId('proj-'),
+              id: typeof parsed.id === 'string' && parsed.id ? parsed.id : makeId('proj-'),
               name:
                 typeof parsed.name === 'string' && parsed.name.trim()
                   ? parsed.name
@@ -958,10 +1203,12 @@ export const App: React.FC = () => {
                     ? 'Proyek Impor'
                     : 'Imported Project',
               board,
+              parts: sanitized.parts,
               wires: cleanedWires,
               sketch: typeof parsed.sketch === 'string' ? parsed.sketch : '',
               updatedAt: Date.now(),
             });
+            setHasManualLayout(false);
             setOverrideHex(null);
             setUndoStack([]);
             setRedoStack([]);
@@ -995,6 +1242,9 @@ export const App: React.FC = () => {
             return false;
           }
         }}
+        theme={theme}
+        onToggleTheme={() => setTheme((th) => (th === 'light' ? 'dark' : 'light'))}
+        onToggleLang={() => setLang((l) => (l === 'id' ? 'en' : 'id'))}
         lang={lang}
         t={t}
       />

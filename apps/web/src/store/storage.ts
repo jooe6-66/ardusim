@@ -9,6 +9,7 @@ const DRAFT_STORAGE_KEY = 'ardusim_workspace_draft_v1';
 export interface WorkspaceDraft {
   diagram: CircuitDiagram;
   overrideHex: string | null;
+  hasManualLayout?: boolean;
 }
 
 export function loadWorkspaceDraft(): WorkspaceDraft | null {
@@ -36,13 +37,18 @@ export function loadWorkspaceDraft(): WorkspaceDraft | null {
         updatedAt: typeof d.updatedAt === 'number' ? d.updatedAt : Date.now(),
       },
       overrideHex,
+      hasManualLayout: Boolean(parsed.hasManualLayout),
     };
   } catch {
     return null;
   }
 }
 
-export function saveWorkspaceDraft(diagram: CircuitDiagram, overrideHex: string | null): void {
+export function saveWorkspaceDraft(
+  diagram: CircuitDiagram,
+  overrideHex: string | null,
+  hasManualLayout = false
+): void {
   try {
     const isEmpty =
       diagram.parts.length === 0 &&
@@ -54,10 +60,13 @@ export function saveWorkspaceDraft(diagram: CircuitDiagram, overrideHex: string 
       return;
     }
     try {
-      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ diagram, overrideHex }));
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ diagram, overrideHex, hasManualLayout }));
     } catch {
       // Retry without hex payload if quota is tight
-      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ diagram, overrideHex: null }));
+      localStorage.setItem(
+        DRAFT_STORAGE_KEY,
+        JSON.stringify({ diagram, overrideHex: null, hasManualLayout })
+      );
     }
   } catch {
     // Ignore restricted storage environments (private browsing / full quota)
