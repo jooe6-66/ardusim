@@ -603,7 +603,9 @@ export const App: React.FC = () => {
       PART_MANIFEST_MAP
     );
     if (res.addedWires === 0) {
-      showToast(t.autoWireEmptyToast);
+      showToast(
+        (res.skippedWiredPins ?? 0) > 0 ? t.autoWireAlreadyWiredToast : t.autoWireEmptyToast
+      );
       return;
     }
     commitHistory(diagram.board, diagram.parts, diagram.wires);

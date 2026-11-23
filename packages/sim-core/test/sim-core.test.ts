@@ -1011,4 +1011,64 @@ test('autoWireFromSketch aligns array-loop LEDs & multi-zone inputs in pin order
     assert.equal(potNet.pinToNet.get(`${p.id}:GND`), potNet.pinToNet.get('uno1:GND.2'));
     assert.equal(potNet.pinToNet.get(`${p.id}:VCC`), potNet.pinToNet.get('uno1:5V'));
   }
+
+  // 3. Non-destructive Auto-Wire: preserves existing passive chains (Diode -> Resistor -> LED) & button wiring,
+  //    only adding newly introduced code pins!
+  m.set('pushbutton', {
+    type: 'pushbutton',
+    category: 'input',
+    width: 56,
+    height: 56,
+    name: { id: 'Btn', en: 'Btn' },
+    defaultProps: {},
+    pins: [
+      { id: '1a', label: '1a', x: 10, y: 10, type: 'passive', exitDir: 'up' },
+      { id: '2a', label: '2a', x: 46, y: 10, type: 'passive', exitDir: 'up' },
+      { id: '1b', label: '1b', x: 10, y: 46, type: 'passive', exitDir: 'down' },
+      { id: '2b', label: '2b', x: 46, y: 46, type: 'passive', exitDir: 'down' },
+    ],
+  });
+  const diodeParts: PartInstance[] = [
+    { id: 'uno1', type: 'arduino-uno', x: 36, y: 156, rotation: 0, props: {} },
+    { id: 'btn1', type: 'pushbutton', x: 372, y: 264, rotation: 0, props: {} },
+    { id: 'd1', type: 'diode', x: 360, y: 132, rotation: 0, props: { model: '1N4007', vf: 0.7 } },
+    { id: 'r1', type: 'resistor', x: 468, y: 132, rotation: 0, props: { value: 220, unit: 'ohm' } },
+    { id: 'led1', type: 'led', x: 576, y: 108, rotation: 0, props: { color: 'green' } },
+  ];
+  const diodeWires: Wire[] = [
+    { id: 'w1', from: { partId: 'uno1', pinId: '2' }, to: { partId: 'btn1', pinId: '1a' }, color: '#0F6660' },
+    { id: 'w2', from: { partId: 'btn1', pinId: '2b' }, to: { partId: 'uno1', pinId: 'GND.2' }, color: '#1F2937' },
+    { id: 'w3', from: { partId: 'uno1', pinId: '8' }, to: { partId: 'd1', pinId: 'A' }, color: '#2563EB' },
+    { id: 'w4', from: { partId: 'd1', pinId: 'C' }, to: { partId: 'r1', pinId: '1' }, color: '#D97706' },
+    { id: 'w5', from: { partId: 'r1', pinId: '2' }, to: { partId: 'led1', pinId: 'A' }, color: '#16A34A' },
+    { id: 'w6', from: { partId: 'led1', pinId: 'C' }, to: { partId: 'uno1', pinId: 'GND.1' }, color: '#1F2937' },
+  ];
+  const diodeSketch = `
+    const int BTN_PIN = 2;
+    const int LED_PIN = 8;
+    void setup() { pinMode(BTN_PIN, INPUT_PULLUP); pinMode(LED_PIN, OUTPUT); }
+    void loop() { digitalWrite(LED_PIN, digitalRead(BTN_PIN) == LOW); }
+  `;
+  const untouched = autoWireFromSketch(diodeSketch, diodeParts[0], diodeParts, diodeWires, m);
+  assert.equal(untouched.addedParts, 0);
+  assert.equal(untouched.addedWires, 0);
+  assert.ok((untouched.skippedWiredPins ?? 0) >= 2);
+  assert.ok(untouched.wires.some((w) => w.from.pinId === '8' && w.to.partId === 'd1' && w.to.pinId === 'A'));
+  assert.ok(untouched.wires.some((w) => w.from.pinId === '2' && w.to.partId === 'btn1' && w.to.pinId === '1a'));
+
+  // Adding a brand new LED on D9 preserves the existing Diode+LED on D8 and Button on D2 intact!
+  const extendedSketch = `${diodeSketch}\nconst int LED2 = 9;\nvoid extra() { pinMode(LED2, OUTPUT); }`;
+  const extended = autoWireFromSketch(extendedSketch, diodeParts[0], diodeParts, diodeWires, m);
+  assert.equal(extended.addedParts, 2, 'Should only add 1 new resistor + 1 new LED for D9');
+  assert.ok(extended.wires.some((w) => w.from.pinId === '8' && w.to.partId === 'd1' && w.to.pinId === 'A'), 'Diode wire on D8 must stay intact');
+  assert.ok(extended.wires.some((w) => w.from.pinId === '2' && w.to.partId === 'btn1' && w.to.pinId === '1a'), 'Button wire on D2 must stay intact');
+  assert.ok(extended.wires.some((w) => w.from.pinId === '9'), 'New D9 LED must be wired');
+  // Verify 3-part Diode->Resistor->LED stack aligns dead-straight on X after autoTidyCircuit
+  const d1 = extended.parts.find((p) => p.id === 'd1')!;
+  const r1 = extended.parts.find((p) => p.id === 'r1')!;
+  const led1 = extended.parts.find((p) => p.id === 'led1')!;
+  assert.equal(d1.rotation, 270);
+  assert.equal(r1.rotation, 270);
+  assert.equal(getPinWorldPosition(d1, m.get('diode')!, m.get('diode')!.pins[1]).x, getPinWorldPosition(r1, m.get('resistor')!, m.get('resistor')!.pins[0]).x);
+  assert.equal(getPinWorldPosition(r1, m.get('resistor')!, m.get('resistor')!.pins[1]).x, getPinWorldPosition(led1, m.get('led')!, m.get('led')!.pins[0]).x);
 });

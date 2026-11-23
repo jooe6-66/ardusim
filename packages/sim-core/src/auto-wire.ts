@@ -1,4 +1,4 @@
-import { pickWireColor } from './netlist.js';
+import { buildNetlist, pickWireColor } from './netlist.js';
 import { autoTidyCircuit } from './router.js';
 import {
   LedColor,
@@ -7,6 +7,7 @@ import {
   PinRef,
   Wire,
   isMcuBoardType,
+  pinKey,
 } from './types.js';
 
 export interface AutoWireResult {
@@ -14,6 +15,7 @@ export interface AutoWireResult {
   wires: Wire[];
   addedParts: number;
   addedWires: number;
+  skippedWiredPins?: number;
 }
 
 function stripComments(code: string): string {
@@ -178,17 +180,79 @@ export function autoWireFromSketch(
     resolvePin(sym);
   }
 
-  // 2. Working part/wire registry: keep all existing parts; reuse unmatched existing peripherals before creating new ones
+  // 2. Working part/wire registry: protect existing wired MCU pins & passive chains (diodes, RC filters, custom circuits),
+  //    reuse unwired existing peripherals before creating new ones, and only add missing code-referenced pins.
   const parts: PartInstance[] = existingParts.map((p) => ({
     ...p,
     props: structuredClone(p.props),
   }));
   const usedIds = new Set(parts.map((p) => p.id));
-  const claimedPartIds = new Set<string>([mcuPart.id]);
+  const pinMetaById = new Map(mcuManifest.pins.map((p) => [p.id, p]));
+
+  const existingNetlist = buildNetlist(existingParts, existingWires, manifests);
+  const existingRailNets = new Set<string>();
+  for (const pin of mcuManifest.pins) {
+    if (pin.type === 'gnd' || pin.type === 'power') {
+      const net = existingNetlist.pinToNet.get(`${mcuPart.id}:${pin.id}`);
+      if (net) existingRailNets.add(net);
+    }
+  }
+  const existingWiredMcuPins = new Set<string>();
+  const protectedPartIds = new Set<string>([mcuPart.id]);
+  const existingSigAdj = new Map<string, Set<string>>();
+  const protQueue: string[] = [];
+
+  for (const w of existingWires) {
+    const net = existingNetlist.pinToNet.get(pinKey(w.from));
+    if (net && existingRailNets.has(net)) continue;
+    const a = w.from.partId;
+    const b = w.to.partId;
+    if (a === mcuPart.id && b !== mcuPart.id) {
+      const mp = pinMetaById.get(w.from.pinId);
+      if (mp && mp.type !== 'power' && mp.type !== 'gnd') {
+        existingWiredMcuPins.add(w.from.pinId);
+        if (!protectedPartIds.has(b)) {
+          protectedPartIds.add(b);
+          protQueue.push(b);
+        }
+      }
+    } else if (b === mcuPart.id && a !== mcuPart.id) {
+      const mp = pinMetaById.get(w.to.pinId);
+      if (mp && mp.type !== 'power' && mp.type !== 'gnd') {
+        existingWiredMcuPins.add(w.to.pinId);
+        if (!protectedPartIds.has(a)) {
+          protectedPartIds.add(a);
+          protQueue.push(a);
+        }
+      }
+    } else if (a !== b) {
+      if (!existingSigAdj.has(a)) existingSigAdj.set(a, new Set());
+      if (!existingSigAdj.has(b)) existingSigAdj.set(b, new Set());
+      existingSigAdj.get(a)!.add(b);
+      existingSigAdj.get(b)!.add(a);
+    }
+  }
+  while (protQueue.length > 0) {
+    const curr = protQueue.shift()!;
+    for (const nb of existingSigAdj.get(curr) ?? []) {
+      if (!protectedPartIds.has(nb)) {
+        protectedPartIds.add(nb);
+        protQueue.push(nb);
+      }
+    }
+  }
+
+  const newlyWiredPartIds = new Set<string>();
   const claimedMcuPins = new Set<string>();
   const pendingLinks: Array<{ from: PinRef; to: PinRef }> = [];
   const railReqs: Array<{ partId: string; pinId: string; rail: 'gnd' | '5v' | '3v3' }> = [];
   let addedParts = 0;
+  let skippedWiredPins = 0;
+
+  const isPinOccupied = (pinId: string): boolean =>
+    claimedMcuPins.has(pinId) || existingWiredMcuPins.has(pinId);
+  const hasProtectedPart = (type: string): boolean =>
+    parts.some((p) => p.type === type && protectedPartIds.has(p.id));
 
   const nextId = (prefix: string): string => {
     const clean = prefix.replace(/[^a-z]/g, '').slice(0, 3) || 'p';
@@ -207,9 +271,11 @@ export function autoWireFromSketch(
   const ensurePart = (type: string, propsPatch?: Record<string, unknown>): PartInstance | null => {
     const manifest = manifests.get(type);
     if (!manifest) return null;
-    const reusable = parts.find((p) => p.type === type && !claimedPartIds.has(p.id));
+    const reusable = parts.find(
+      (p) => p.type === type && !protectedPartIds.has(p.id) && !newlyWiredPartIds.has(p.id)
+    );
     if (reusable) {
-      claimedPartIds.add(reusable.id);
+      newlyWiredPartIds.add(reusable.id);
       if (propsPatch) reusable.props = { ...reusable.props, ...propsPatch };
       return reusable;
     }
@@ -222,7 +288,7 @@ export function autoWireFromSketch(
       props: { ...structuredClone(manifest.defaultProps), ...(propsPatch ?? {}) },
     };
     parts.push(created);
-    claimedPartIds.add(created.id);
+    newlyWiredPartIds.add(created.id);
     addedParts++;
     return created;
   };
@@ -273,6 +339,12 @@ export function autoWireFromSketch(
   // 3. Dedicated Library & Bus Peripherals
   // 3a. LCD 16x2 I2C
   for (const m of code.matchAll(/\bLiquidCrystal_I2C\s+\w+\s*\(([^)]*)\)/g)) {
+    if (hasProtectedPart('lcd-1602-i2c')) {
+      claimedMcuPins.add(i2cSda);
+      claimedMcuPins.add(i2cScl);
+      skippedWiredPins += 2;
+      continue;
+    }
     const args = splitTopLevelArgs(m[1]);
     const addr = parseHexOrInt(args[0]);
     const part = ensurePart('lcd-1602-i2c', addr ? { i2cAddress: addr } : undefined);
@@ -285,33 +357,51 @@ export function autoWireFromSketch(
 
   // 3b. OLED SSD1306
   if (/\bAdafruit_SSD1306\b/.test(code)) {
-    const addrMatch = code.match(/\.begin\s*\([^)]*?(0x3[cCdD])/);
-    const addr = addrMatch ? parseHexOrInt(addrMatch[1]) : null;
-    const part = ensurePart('oled-ssd1306', addr ? { i2cAddress: addr } : undefined);
-    if (part) {
-      linkPower(part.id);
-      linkMcu(i2cSda, part.id, 'SDA');
-      linkMcu(i2cScl, part.id, 'SCL');
+    if (hasProtectedPart('oled-ssd1306')) {
+      claimedMcuPins.add(i2cSda);
+      claimedMcuPins.add(i2cScl);
+      skippedWiredPins += 2;
+    } else {
+      const addrMatch = code.match(/\.begin\s*\([^)]*?(0x3[cCdD])/);
+      const addr = addrMatch ? parseHexOrInt(addrMatch[1]) : null;
+      const part = ensurePart('oled-ssd1306', addr ? { i2cAddress: addr } : undefined);
+      if (part) {
+        linkPower(part.id);
+        linkMcu(i2cSda, part.id, 'SDA');
+        linkMcu(i2cScl, part.id, 'SCL');
+      }
     }
   }
 
   // 3c. DS3231 RTC
   if (/\b(?:RTC_DS3231|DS3231)\b/.test(code)) {
-    const part = ensurePart('ds3231-rtc');
-    if (part) {
-      linkPower(part.id);
-      linkMcu(i2cSda, part.id, 'SDA');
-      linkMcu(i2cScl, part.id, 'SCL');
+    if (hasProtectedPart('ds3231-rtc')) {
+      claimedMcuPins.add(i2cSda);
+      claimedMcuPins.add(i2cScl);
+      skippedWiredPins += 2;
+    } else {
+      const part = ensurePart('ds3231-rtc');
+      if (part) {
+        linkPower(part.id);
+        linkMcu(i2cSda, part.id, 'SDA');
+        linkMcu(i2cScl, part.id, 'SCL');
+      }
     }
   }
 
   // 3d. MPU6050 IMU
   if (/\b(?:MPU6050|Adafruit_MPU6050)\b/.test(code)) {
-    const part = ensurePart('mpu6050');
-    if (part) {
-      linkPower(part.id);
-      linkMcu(i2cSda, part.id, 'SDA');
-      linkMcu(i2cScl, part.id, 'SCL');
+    if (hasProtectedPart('mpu6050')) {
+      claimedMcuPins.add(i2cSda);
+      claimedMcuPins.add(i2cScl);
+      skippedWiredPins += 2;
+    } else {
+      const part = ensurePart('mpu6050');
+      if (part) {
+        linkPower(part.id);
+        linkMcu(i2cSda, part.id, 'SDA');
+        linkMcu(i2cScl, part.id, 'SCL');
+      }
     }
   }
 
@@ -320,6 +410,15 @@ export function autoWireFromSketch(
     const args = splitTopLevelArgs(m[1]);
     const ss = resolvePin(args[0]) ?? (isMega ? '53' : '10');
     const rst = resolvePin(args[1]) ?? '9';
+    if (hasProtectedPart('rfid-rc522') || isPinOccupied(ss)) {
+      claimedMcuPins.add(ss);
+      claimedMcuPins.add(rst);
+      claimedMcuPins.add(spiSck);
+      claimedMcuPins.add(spiMosi);
+      claimedMcuPins.add(spiMiso);
+      skippedWiredPins += 1;
+      continue;
+    }
     const part = ensurePart('rfid-rc522');
     if (part) {
       linkPower(part.id, '3.3V', 'GND', true);
@@ -338,6 +437,13 @@ export function autoWireFromSketch(
     const clk = resolvePin(args[1]);
     const cs = resolvePin(args[2]);
     if (din && clk && cs) {
+      if (isPinOccupied(din) || isPinOccupied(clk) || isPinOccupied(cs)) {
+        claimedMcuPins.add(din);
+        claimedMcuPins.add(clk);
+        claimedMcuPins.add(cs);
+        skippedWiredPins += 1;
+        continue;
+      }
       const part = ensurePart('max7219');
       if (part) {
         linkPower(part.id);
@@ -353,6 +459,11 @@ export function autoWireFromSketch(
     const args = splitTopLevelArgs(m[1]);
     const dataPin = resolvePin(args[0]);
     if (dataPin) {
+      if (isPinOccupied(dataPin)) {
+        claimedMcuPins.add(dataPin);
+        skippedWiredPins += 1;
+        continue;
+      }
       const model = /DHT11/i.test(args[1] ?? '') ? 'DHT11' : 'DHT22';
       const part = ensurePart('dht22', { model });
       if (part) {
@@ -371,7 +482,11 @@ export function autoWireFromSketch(
     const attachRe = new RegExp(`\\b${varName}(?:\\s*\\[[^\\]]*\\])?\\.attach\\s*\\(([^)]*)\\)`, 'g');
     for (const m of code.matchAll(attachRe)) {
       for (const pin of resolvePins(splitTopLevelArgs(m[1])[0])) {
-        if (claimedMcuPins.has(pin)) continue;
+        if (isPinOccupied(pin)) {
+          claimedMcuPins.add(pin);
+          skippedWiredPins += 1;
+          continue;
+        }
         const part = ensurePart('servo');
         if (part) {
           linkPower(part.id);
@@ -386,6 +501,11 @@ export function autoWireFromSketch(
     const args = splitTopLevelArgs(m[1]);
     const din = resolvePin(args[1]);
     if (din) {
+      if (isPinOccupied(din)) {
+        claimedMcuPins.add(din);
+        skippedWiredPins += 1;
+        continue;
+      }
       const part = ensurePart('neopixel-strip');
       if (part) {
         linkPower(part.id);
@@ -403,6 +523,14 @@ export function autoWireFromSketch(
     const p3 = resolvePin(args[3]);
     const p4 = resolvePin(args[4]);
     if (p1 && p2 && p3 && p4) {
+      if (isPinOccupied(p1) || isPinOccupied(p2) || isPinOccupied(p3) || isPinOccupied(p4)) {
+        claimedMcuPins.add(p1);
+        claimedMcuPins.add(p2);
+        claimedMcuPins.add(p3);
+        claimedMcuPins.add(p4);
+        skippedWiredPins += 1;
+        continue;
+      }
       const part = ensurePart('stepper', steps && steps >= 8 ? { stepsPerRev: steps } : undefined);
       if (part) {
         linkMcu(p1, part.id, 'IN1');
@@ -422,6 +550,12 @@ export function autoWireFromSketch(
       const rows = rowArr.slice(0, 4).map((x) => resolvePin(x));
       const cols = colArr.slice(0, 4).map((x) => resolvePin(x));
       if (rows.every(Boolean) && cols.every(Boolean)) {
+        const allPins = [...rows, ...cols] as string[];
+        if (allPins.some((p) => isPinOccupied(p))) {
+          allPins.forEach((p) => claimedMcuPins.add(p));
+          skippedWiredPins += 1;
+          continue;
+        }
         const part = ensurePart('keypad-4x4');
         if (part) {
           rows.forEach((p, i) => linkMcu(p!, part.id, `R${i + 1}`));
@@ -438,6 +572,12 @@ export function autoWireFromSketch(
     const rxPin = resolvePin(args[0]);
     const txPin = resolvePin(args[1]);
     if (rxPin && txPin) {
+      if (isPinOccupied(rxPin) || isPinOccupied(txPin)) {
+        claimedMcuPins.add(rxPin);
+        claimedMcuPins.add(txPin);
+        skippedWiredPins += 1;
+        continue;
+      }
       const isGps = /gps|nmea|tinygps|gpgga|gprmc/i.test(`${varName} ${code}`);
       const part = ensurePart(isGps ? 'gps-neo6m' : 'hc-05');
       if (part) {
@@ -452,11 +592,16 @@ export function autoWireFromSketch(
   for (const m of code.matchAll(/\bpulseIn\s*\(\s*([^,)]+)\s*,\s*HIGH/g)) {
     const echoPin = resolvePin(m[1]);
     if (!echoPin || claimedMcuPins.has(echoPin)) continue;
+    if (existingWiredMcuPins.has(echoPin)) {
+      claimedMcuPins.add(echoPin);
+      skippedWiredPins += 1;
+      continue;
+    }
     let trigPin: string | null = null;
     for (const [sym] of symValues) {
       if (/trig/i.test(sym)) {
         const p = resolvePin(sym);
-        if (p && p !== echoPin && !claimedMcuPins.has(p)) {
+        if (p && p !== echoPin && !isPinOccupied(p)) {
           trigPin = p;
           break;
         }
@@ -466,7 +611,7 @@ export function autoWireFromSketch(
       const trigMatch = code.match(/\bdigitalWrite\s*\(\s*([^,)]+)\s*,\s*HIGH\s*\)\s*;\s*delayMicroseconds\s*\(\s*10\s*\)/);
       if (trigMatch) {
         const p = resolvePin(trigMatch[1]);
-        if (p && p !== echoPin) trigPin = p;
+        if (p && p !== echoPin && !isPinOccupied(p)) trigPin = p;
       }
     }
     if (trigPin) {
@@ -482,12 +627,15 @@ export function autoWireFromSketch(
   // 3n. Buzzer via tone()
   for (const m of code.matchAll(/\btone\s*\(\s*([^,)]+)/g)) {
     for (const pin of resolvePins(m[1])) {
-      if (!claimedMcuPins.has(pin)) {
-        const part = ensurePart('buzzer');
-        if (part) {
-          linkMcu(pin, part.id, '+');
-          requestRail(part.id, '-', 'gnd');
-        }
+      if (isPinOccupied(pin)) {
+        claimedMcuPins.add(pin);
+        skippedWiredPins += 1;
+        continue;
+      }
+      const part = ensurePart('buzzer');
+      if (part) {
+        linkMcu(pin, part.id, '+');
+        requestRail(part.id, '-', 'gnd');
       }
     }
   }
@@ -500,23 +648,46 @@ export function autoWireFromSketch(
   for (const m of code.matchAll(/\bpinMode\s*\(\s*([^,)]+)\s*,\s*(OUTPUT|INPUT_PULLUP|INPUT)\s*\)/g)) {
     for (const p of resolvePins(m[1])) {
       if (claimedMcuPins.has(p)) continue;
+      if (existingWiredMcuPins.has(p)) {
+        claimedMcuPins.add(p);
+        skippedWiredPins += 1;
+        continue;
+      }
       if (m[2] === 'OUTPUT') outputPins.add(p);
       else inputPins.add(p);
     }
   }
   for (const m of code.matchAll(/\b(?:digitalWrite|analogWrite)\s*\(\s*([^,)]+)/g)) {
     for (const p of resolvePins(m[1])) {
-      if (!claimedMcuPins.has(p) && !inputPins.has(p)) outputPins.add(p);
+      if (claimedMcuPins.has(p) || inputPins.has(p)) continue;
+      if (existingWiredMcuPins.has(p)) {
+        claimedMcuPins.add(p);
+        skippedWiredPins += 1;
+        continue;
+      }
+      outputPins.add(p);
     }
   }
   for (const m of code.matchAll(/\bdigitalRead\s*\(\s*([^)]+)\)/g)) {
     for (const p of resolvePins(m[1])) {
-      if (!claimedMcuPins.has(p) && !outputPins.has(p)) inputPins.add(p);
+      if (claimedMcuPins.has(p) || outputPins.has(p)) continue;
+      if (existingWiredMcuPins.has(p)) {
+        claimedMcuPins.add(p);
+        skippedWiredPins += 1;
+        continue;
+      }
+      inputPins.add(p);
     }
   }
   for (const m of code.matchAll(/\banalogRead\s*\(\s*([^)]+)\)/g)) {
     for (const p of resolvePins(m[1])) {
-      if (!claimedMcuPins.has(p)) analogPins.add(p);
+      if (claimedMcuPins.has(p)) continue;
+      if (existingWiredMcuPins.has(p)) {
+        claimedMcuPins.add(p);
+        skippedWiredPins += 1;
+        continue;
+      }
+      analogPins.add(p);
     }
   }
 
@@ -690,11 +861,16 @@ export function autoWireFromSketch(
   }
 
   if (pendingLinks.length === 0) {
-    return { parts: existingParts, wires: existingWires, addedParts: 0, addedWires: 0 };
+    return {
+      parts: existingParts,
+      wires: existingWires,
+      addedParts: 0,
+      addedWires: 0,
+      skippedWiredPins,
+    };
   }
 
   // 4f. Wire common GND / 5V / 3.3V buses per header zone so aligned parts share one clean rail
-  const pinMetaById = new Map(mcuManifest.pins.map((p) => [p.id, p]));
   const inferZone = (pinId: string): 'top' | 'bottom' | 'right' | 'left' => {
     const p = pinMetaById.get(pinId);
     if (!p) return 'top';
@@ -808,14 +984,10 @@ export function autoWireFromSketch(
     }
   }
 
-  // 5. Preserve wires outside the auto-wired subgraph (keeps inter-MCU links & manual power wiring intact,
-  //    while replacing any stale wire attached to an MCU pin newly claimed by this sketch)
-  const preservedWires = existingWires.filter((w) => {
-    if (claimedPartIds.has(w.from.partId) && claimedPartIds.has(w.to.partId)) return false;
-    if (w.from.partId === mcuPart.id && claimedMcuPins.has(w.from.pinId)) return false;
-    if (w.to.partId === mcuPart.id && claimedMcuPins.has(w.to.pinId)) return false;
-    return true;
-  });
+  // 5. Preserve all existing wires outside newly auto-wired parts (protects diodes, RC filters, manual wiring, and shared buses)
+  const preservedWires = existingWires.filter(
+    (w) => !(newlyWiredPartIds.has(w.from.partId) && newlyWiredPartIds.has(w.to.partId))
+  );
   const usedWireIds = new Set(preservedWires.map((w) => w.id));
   const nextWireId = (): string => {
     for (let i = 1; i < 9999; i++) {
@@ -849,5 +1021,6 @@ export function autoWireFromSketch(
     wires: tidied.wires,
     addedParts,
     addedWires: pendingLinks.length,
+    skippedWiredPins,
   };
 }

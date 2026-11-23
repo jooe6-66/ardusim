@@ -1400,34 +1400,43 @@ function placeHeaderRows(
           out.set(p.id, inst);
         });
 
-        // Then align axial passives dead-straight on X with their directly connected neighbor pin
-        visualOrder.forEach((p, idx) => {
-          const m = manifests.get(p.type);
-          if (!m || !isAxialPassive(p.type)) return;
-          const sz = getEffectiveSize(p, m);
-          let alignedX: number | null = null;
-          for (const w of wires) {
-            const otherId = w.from.partId === p.id ? w.to.partId : w.to.partId === p.id ? w.from.partId : null;
-            const otherPinId = w.from.partId === p.id ? w.to.pinId : w.to.partId === p.id ? w.from.pinId : null;
-            if (!otherId || !otherPinId) continue;
-            const otherInst = placedInCol.get(otherId);
-            const otherMan = otherInst ? manifests.get(otherInst.type) : undefined;
-            const otherPin = otherMan?.pins.find((pn) => pn.id === otherPinId);
-            if (otherInst && otherMan && otherPin) {
-              const targetX = getPinWorldPosition(otherInst, otherMan, otherPin).x;
-              // Vertical axial passive pins lie on its visual centerline (part.x + m.width / 2)
-              alignedX = targetX - m.width / 2;
-              break;
-            }
-          }
-          const inst =
-            alignedX !== null
-              ? {
+        // Align axial passives dead-straight on X with their connected neighbor pin (multi-pass for 3-part stacks like Diode->Resistor->LED)
+        for (let pass = 0; pass < visualOrder.length; pass++) {
+          let changed = false;
+          visualOrder.forEach((p, idx) => {
+            if (placedInCol.has(p.id) || !isAxialPassive(p.type)) return;
+            const m = manifests.get(p.type);
+            if (!m) return;
+            const sz = getEffectiveSize(p, m);
+            for (const w of wires) {
+              const otherId = w.from.partId === p.id ? w.to.partId : w.to.partId === p.id ? w.from.partId : null;
+              const otherPinId = w.from.partId === p.id ? w.to.pinId : w.to.partId === p.id ? w.from.pinId : null;
+              if (!otherId || !otherPinId) continue;
+              const otherInst = placedInCol.get(otherId);
+              const otherMan = otherInst ? manifests.get(otherInst.type) : undefined;
+              const otherPin = otherMan?.pins.find((pn) => pn.id === otherPinId);
+              if (otherInst && otherMan && otherPin) {
+                const targetX = getPinWorldPosition(otherInst, otherMan, otherPin).x;
+                const inst = {
                   ...p,
-                  x: alignedX,
+                  x: targetX - m.width / 2,
                   y: snapGrid(ySlots[idx] + (sz.h - m.height) / 2),
-                }
-              : placeAtVisualBox(p, m, snapGrid(x + (meas.w - sz.w) / 2), ySlots[idx]);
+                };
+                placedInCol.set(p.id, inst);
+                out.set(p.id, inst);
+                changed = true;
+                break;
+              }
+            }
+          });
+          if (!changed) break;
+        }
+        visualOrder.forEach((p, idx) => {
+          if (placedInCol.has(p.id)) return;
+          const m = manifests.get(p.type);
+          if (!m) return;
+          const sz = getEffectiveSize(p, m);
+          const inst = placeAtVisualBox(p, m, snapGrid(x + (meas.w - sz.w) / 2), ySlots[idx]);
           placedInCol.set(p.id, inst);
           out.set(p.id, inst);
         });

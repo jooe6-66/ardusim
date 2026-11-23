@@ -202,6 +202,7 @@ export interface Messages {
   autoWireHint: string;
   autoWireToast: (parts: number, wires: number) => string;
   autoWireEmptyToast: string;
+  autoWireAlreadyWiredToast: string;
 }
 
 export const MESSAGES: Record<Lang, Messages> = {
@@ -410,6 +411,7 @@ export const MESSAGES: Record<Lang, Messages> = {
         ? `Auto-Wire: +${parts} komponen, ${wires} kabel tersambung`
         : `Auto-Wire: ${wires} kabel tersambung`,
     autoWireEmptyToast: 'Tidak ada pin komponen terdeteksi di kode sketch',
+    autoWireAlreadyWiredToast: 'Semua pin kode sudah tersambung di kanvas',
   },
   en: {
     appName: 'ArduSim',
@@ -616,5 +618,6 @@ export const MESSAGES: Record<Lang, Messages> = {
         ? `Auto-Wire: +${parts} parts, ${wires} wires connected`
         : `Auto-Wire: ${wires} wires connected`,
     autoWireEmptyToast: 'No component pins detected in sketch code',
+    autoWireAlreadyWiredToast: 'All sketch pins are already wired on canvas',
   },
 };
