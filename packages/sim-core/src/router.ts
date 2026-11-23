@@ -1,3 +1,4 @@
+import { buildNetlist } from './netlist.js';
 import {
   PartInstance,
   PartManifest,
@@ -388,9 +389,9 @@ class MinHeap<T> {
 
 /**
  * Re-routes all jumper wires around component bodies with board clearance halos,
- * straight pin lead-outs, and wire-to-wire channel separation so parallel wires
- * stay spaced apart and never hug boards or stack on top of each other.
- * ponytail: dense 12px grid A* bounded to circuit extents + 180px margin; handles up to ~100 wires in <60ms.
+ * straight pin lead-outs, fast-path minimal-bend candidates (0/1/2 bends),
+ * geometric wire-to-wire overlap prevention, and post-route bend reduction.
+ * ponytail: dense 12px grid A* fallback bounded to circuit extents + 180px margin; handles up to ~100 wires in <60ms.
  */
 export function autoTidyWires(
   parts: PartInstance[],
@@ -407,12 +408,22 @@ export function autoTidyWires(
     exitDir?: ExitDirection;
   }
 
+  interface RoutedSegment {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    horiz: boolean;
+    netId: string;
+  }
+
+  const netlist = buildNetlist(parts, wires, manifests);
   const pinPos = new Map<string, PinMeta>();
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  const partObstacles: Array<{ rect: Rect; isMcu: boolean }> = [];
+  const partObstacles: Array<{ partId: string; rect: Rect; isMcu: boolean }> = [];
   const breadboards: Array<{ partId: string; rect: Rect }> = [];
 
   for (const part of parts) {
@@ -427,7 +438,7 @@ export function autoTidyWires(
     if (part.type === 'breadboard-half') {
       breadboards.push({ partId: part.id, rect });
     } else {
-      partObstacles.push({ rect, isMcu: isMcuBoardType(part.type) });
+      partObstacles.push({ partId: part.id, rect, isMcu: isMcuBoardType(part.type) });
     }
 
     for (const pin of manifest.pins) {
@@ -443,7 +454,7 @@ export function autoTidyWires(
 
   if (!Number.isFinite(minX)) return wires;
 
-  const margin = 180;
+  const margin = 192;
   const gxMin = Math.floor((minX - margin) / GRID_STEP);
   const gyMin = Math.floor((minY - margin) / GRID_STEP);
   const gxMax = Math.ceil((maxX + margin) / GRID_STEP);
@@ -473,15 +484,13 @@ export function autoTidyWires(
         const dx = wx < x1 ? x1 - wx : wx > x2 ? wx - x2 : 0;
         const dy = wy < y1 ? y1 - wy : wy > y2 ? wy - y2 : 0;
         if (dx === 0 && dy === 0) {
-          cost = Math.max(cost, 260);
+          cost = Math.max(cost, 1200);
           break;
         }
         const dist = Math.max(dx, dy);
         if (dist <= GRID_STEP) {
-          // 12px clearance ring around every board/component
-          cost = Math.max(cost, ob.isMcu ? 38 : 28);
+          cost = Math.max(cost, ob.isMcu ? 44 : 32);
         } else if (dist <= GRID_STEP * 2) {
-          // 24px secondary buffer so buses prefer clean outer channels
           cost = Math.max(cost, ob.isMcu ? 12 : 6);
         }
       }
@@ -489,7 +498,6 @@ export function autoTidyWires(
     }
   }
 
-  // Discourage routing unrelated wires directly over other components' pin pads
   const pinPadCell = new Uint8Array(cols * rows);
   for (const meta of pinPos.values()) {
     if (meta.partType === 'breadboard-half') continue;
@@ -497,20 +505,327 @@ export function autoTidyWires(
     pinPadCell[g.gy * cols + g.gx] = 1;
   }
 
-  // Track exact wire tracks (usedCellH/V) AND 1-cell parallel neighbor buffers (nearLaneH/V)
+  // Exact geometric segment registry + grid lane occupancy (updated from FINAL world segments!)
+  const usedSegs: RoutedSegment[] = [];
   const usedCellH = new Uint16Array(cols * rows);
   const usedCellV = new Uint16Array(cols * rows);
   const nearLaneH = new Uint16Array(cols * rows);
   const nearLaneV = new Uint16Array(cols * rows);
 
-  // Route shorter local connections first so longer power/signal buses wrap cleanly around the outside
+  const segHitsRect = (a: Point, b: Point, r: Rect, pad: number): boolean => {
+    const rx1 = r.x1 - pad;
+    const ry1 = r.y1 - pad;
+    const rx2 = r.x2 + pad;
+    const ry2 = r.y2 + pad;
+    if (Math.abs(a.y - b.y) < 0.5) {
+      const y = a.y;
+      if (y <= ry1 || y >= ry2) return false;
+      const sx1 = Math.min(a.x, b.x);
+      const sx2 = Math.max(a.x, b.x);
+      return sx2 > rx1 && sx1 < rx2;
+    }
+    if (Math.abs(a.x - b.x) < 0.5) {
+      const x = a.x;
+      if (x <= rx1 || x >= rx2) return false;
+      const sy1 = Math.min(a.y, b.y);
+      const sy2 = Math.max(a.y, b.y);
+      return sy2 > ry1 && sy1 < ry2;
+    }
+    return true;
+  };
+
+  /** Checks if an orthogonal path stays clear of component interiors and non-owned breadboards. */
+  const pathHitsObstacle = (
+    pts: Point[],
+    fromPartId: string,
+    toPartId: string
+  ): boolean => {
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (Math.abs(a.x - b.x) > 0.5 && Math.abs(a.y - b.y) > 0.5) return true;
+      const isStartLeg = i === 1;
+      const isEndLeg = i === pts.length - 1;
+      for (const ob of partObstacles) {
+        const isOwnStart = isStartLeg && ob.partId === fromPartId;
+        const isOwnEnd = isEndLeg && ob.partId === toPartId;
+        if (isOwnStart || isOwnEnd) continue;
+        // Strict clearance around non-owned parts; zero interior intrusion on owned interior legs
+        const pad = ob.partId === fromPartId || ob.partId === toPartId ? 0 : 8;
+        if (segHitsRect(a, b, ob.rect, pad)) return true;
+      }
+      for (const bb of breadboards) {
+        if (bb.partId === fromPartId || bb.partId === toPartId) continue;
+        if (segHitsRect(a, b, bb.rect, 4)) return true;
+      }
+    }
+    return false;
+  };
+
+  /** Evaluates exact collinear overlaps and perpendicular crossings against already-routed wires. */
+  const evaluateWireConflicts = (
+    pts: Point[],
+    netId: string
+  ): { overlaps: number; crossings: number; nearParallel: number } => {
+    let overlaps = 0;
+    let crossings = 0;
+    let nearParallel = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const horiz = Math.abs(a.y - b.y) < 0.5;
+      const minA = horiz ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+      const maxA = horiz ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+      const coordA = horiz ? a.y : a.x;
+      if (maxA - minA < 1) continue;
+
+      for (const seg of usedSegs) {
+        const sameNet = seg.netId === netId;
+        if (seg.horiz === horiz) {
+          const coordB = horiz ? seg.y1 : seg.x1;
+          const minB = horiz ? Math.min(seg.x1, seg.x2) : Math.min(seg.y1, seg.y2);
+          const maxB = horiz ? Math.max(seg.x1, seg.x2) : Math.max(seg.y1, seg.y2);
+          const span = Math.min(maxA, maxB) - Math.max(minA, minB);
+          if (span <= 2) continue;
+          const sep = Math.abs(coordA - coordB);
+          if (sep < 7) {
+            if (!sameNet) overlaps += 1;
+          } else if (sep < 11.5) {
+            nearParallel += 1;
+          }
+        } else {
+          // Perpendicular crossing
+          const hY = horiz ? a.y : seg.y1;
+          const hX1 = horiz ? Math.min(a.x, b.x) : Math.min(seg.x1, seg.x2);
+          const hX2 = horiz ? Math.max(a.x, b.x) : Math.max(seg.x1, seg.x2);
+          const vX = horiz ? seg.x1 : a.x;
+          const vY1 = horiz ? Math.min(seg.y1, seg.y2) : Math.min(a.y, b.y);
+          const vY2 = horiz ? Math.max(seg.y1, seg.y2) : Math.max(a.y, b.y);
+          if (vX > hX1 + 2 && vX < hX2 - 2 && hY > vY1 + 2 && hY < vY2 - 2) {
+            crossings += 1;
+          }
+        }
+      }
+    }
+    return { overlaps, crossings, nearParallel };
+  };
+
+  /** Registers every segment of the final world path into both exact geometry and grid occupancy. */
+  const registerFinalPath = (pts: Point[], netId: string) => {
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (Math.hypot(b.x - a.x, b.y - a.y) < 0.5) continue;
+      const horiz = Math.abs(a.y - b.y) < 0.5;
+      usedSegs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, horiz, netId });
+
+      // Rasterize into 12px grid cells so subsequent A* searches avoid ALL segments including stubs
+      const ga = toGrid(a);
+      const gb = toGrid(b);
+      if (horiz) {
+        const y = ga.gy;
+        const xStart = Math.min(ga.gx, gb.gx);
+        const xEnd = Math.max(ga.gx, gb.gx);
+        for (let gx = xStart; gx <= xEnd; gx++) {
+          usedCellH[y * cols + gx]++;
+          if (y > 0) nearLaneH[(y - 1) * cols + gx]++;
+          if (y + 1 < rows) nearLaneH[(y + 1) * cols + gx]++;
+        }
+      } else {
+        const x = ga.gx;
+        const yStart = Math.min(ga.gy, gb.gy);
+        const yEnd = Math.max(ga.gy, gb.gy);
+        for (let gy = yStart; gy <= yEnd; gy++) {
+          usedCellV[gy * cols + x]++;
+          if (x > 0) nearLaneV[gy * cols + (x - 1)]++;
+          if (x + 1 < cols) nearLaneV[gy * cols + (x + 1)]++;
+        }
+      }
+    }
+  };
+
+  const pathLength = (pts: Point[]): number => {
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+      total += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
+    }
+    return total;
+  };
+
+  /** Checks that first/last segments leave pins along their declared exitDir without backing into the part. */
+  const respectsPinExits = (
+    pts: Point[],
+    fromExit: ExitDirection | undefined,
+    toExit: ExitDirection | undefined
+  ): boolean => {
+    if (pts.length < 2) return false;
+    if (fromExit) {
+      const dx = pts[1].x - pts[0].x;
+      const dy = pts[1].y - pts[0].y;
+      if (fromExit === 'up' && !(Math.abs(dx) < 0.5 && dy < -1)) return false;
+      if (fromExit === 'down' && !(Math.abs(dx) < 0.5 && dy > 1)) return false;
+      if (fromExit === 'left' && !(Math.abs(dy) < 0.5 && dx < -1)) return false;
+      if (fromExit === 'right' && !(Math.abs(dy) < 0.5 && dx > 1)) return false;
+    }
+    if (toExit) {
+      const last = pts.length - 1;
+      // Vector going OUT of `to` toward `pts[last - 1]` must match `toExit`
+      const dx = pts[last - 1].x - pts[last].x;
+      const dy = pts[last - 1].y - pts[last].y;
+      if (toExit === 'up' && !(Math.abs(dx) < 0.5 && dy < -1)) return false;
+      if (toExit === 'down' && !(Math.abs(dx) < 0.5 && dy > 1)) return false;
+      if (toExit === 'left' && !(Math.abs(dy) < 0.5 && dx < -1)) return false;
+      if (toExit === 'right' && !(Math.abs(dy) < 0.5 && dx > 1)) return false;
+    }
+    return true;
+  };
+
+  /**
+   * Tries clean 0-bend (dead-straight), 1-bend (L), and 2-bend (Z/U with staggered channels)
+   * orthogonal routes before invoking full grid A*, keeping wires crisp with minimal turns.
+   */
+  const tryCleanFastRoute = (
+    fromInfo: PinMeta,
+    toInfo: PinMeta,
+    startStub: Point,
+    endStub: Point,
+    netId: string
+  ): Point[] | null => {
+    const a = fromInfo.world;
+    const b = toInfo.world;
+    const candidates: Point[][] = [];
+
+    // 0-bend: exact horizontal or vertical alignment
+    if (Math.abs(a.x - b.x) < 0.5 || Math.abs(a.y - b.y) < 0.5) {
+      candidates.push([a, b]);
+    }
+
+    // 1-bend L candidates (exact pin axes)
+    candidates.push(simplifyOrthogonal([a, { x: b.x, y: a.y }, b]));
+    candidates.push(simplifyOrthogonal([a, { x: a.x, y: b.y }, b]));
+
+    // 2-bend & 3-bend clean stub-to-stub channel candidates at staggered 12px lane offsets
+    const offsets = [0, 12, -12, 24, -24, 36, -36, 48, -48];
+    const fromVert = fromInfo.exitDir === 'up' || fromInfo.exitDir === 'down';
+    const toVert = toInfo.exitDir === 'up' || toInfo.exitDir === 'down';
+
+    for (const off of offsets) {
+      if (fromVert && toVert) {
+        const y1 = snapGrid(startStub.y + off);
+        const y2 = snapGrid(endStub.y + off);
+        candidates.push(simplifyOrthogonal([a, { x: a.x, y: y1 }, { x: b.x, y: y1 }, b]));
+        if (y2 !== y1) {
+          candidates.push(simplifyOrthogonal([a, { x: a.x, y: y2 }, { x: b.x, y: y2 }, b]));
+        }
+        const midY = snapGrid((startStub.y + endStub.y) / 2 + off);
+        candidates.push(simplifyOrthogonal([a, { x: a.x, y: midY }, { x: b.x, y: midY }, b]));
+      } else if (!fromVert && !toVert) {
+        const x1 = snapGrid(startStub.x + off);
+        const x2 = snapGrid(endStub.x + off);
+        candidates.push(simplifyOrthogonal([a, { x: x1, y: a.y }, { x: x1, y: b.y }, b]));
+        if (x2 !== x1) {
+          candidates.push(simplifyOrthogonal([a, { x: x2, y: a.y }, { x: x2, y: b.y }, b]));
+        }
+        const midX = snapGrid((startStub.x + endStub.x) / 2 + off);
+        candidates.push(simplifyOrthogonal([a, { x: midX, y: a.y }, { x: midX, y: b.y }, b]));
+      } else {
+        // Mixed vertical + horizontal exits
+        const sx = fromVert ? a.x : snapGrid(startStub.x + off);
+        const sy = fromVert ? snapGrid(startStub.y + off) : a.y;
+        const ex = toVert ? b.x : snapGrid(endStub.x + off);
+        const ey = toVert ? snapGrid(endStub.y + off) : b.y;
+        candidates.push(simplifyOrthogonal([a, { x: sx, y: sy }, { x: ex, y: sy }, { x: ex, y: ey }, b]));
+        candidates.push(simplifyOrthogonal([a, { x: sx, y: sy }, { x: sx, y: ey }, { x: ex, y: ey }, b]));
+      }
+    }
+
+    let bestPts: Point[] | null = null;
+    let bestScore = Infinity;
+
+    for (const cand of candidates) {
+      if (cand.length < 2) continue;
+      if (!respectsPinExits(cand, fromInfo.exitDir, toInfo.exitDir)) continue;
+      if (pathHitsObstacle(cand, fromInfo.partId, toInfo.partId)) continue;
+      const conf = evaluateWireConflicts(cand, netId);
+      if (conf.overlaps > 0) continue;
+
+      const bends = Math.max(0, cand.length - 2);
+      const score = pathLength(cand) + bends * 48 + conf.crossings * 30 + conf.nearParallel * 20;
+      if (score < bestScore) {
+        bestScore = score;
+        bestPts = cand;
+      }
+    }
+
+    return bestPts;
+  };
+
+  /** Post-route bend reduction: collapses redundant U-jogs when the straightened shortcut stays clear. */
+  const polishOrthogonalPath = (
+    pts: Point[],
+    fromInfo: PinMeta,
+    toInfo: PinMeta,
+    netId: string
+  ): Point[] => {
+    let cur = simplifyOrthogonal(pts);
+    for (let pass = 0; pass < 3; pass++) {
+      let improved = false;
+      for (let i = 1; i + 2 < cur.length; i++) {
+        const p0 = cur[i - 1];
+        const p1 = cur[i];
+        const p2 = cur[i + 1];
+        const p3 = cur[i + 2];
+        // Try collapsing interior segment p1->p2 onto p0 or p3 axis
+        const horizMid = Math.abs(p1.y - p2.y) < 0.5;
+        const trials: Point[][] = [];
+        if (horizMid) {
+          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p3.x, y: p0.y }, ...cur.slice(i + 2)]));
+          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p0.x, y: p3.y }, ...cur.slice(i + 2)]));
+        } else {
+          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p0.x, y: p3.y }, ...cur.slice(i + 2)]));
+          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p3.x, y: p0.y }, ...cur.slice(i + 2)]));
+        }
+        for (const cand of trials) {
+          if (cand.length >= cur.length) continue;
+          if (!respectsPinExits(cand, fromInfo.exitDir, toInfo.exitDir)) continue;
+          if (pathHitsObstacle(cand, fromInfo.partId, toInfo.partId)) continue;
+          const conf = evaluateWireConflicts(cand, netId);
+          if (conf.overlaps > 0) continue;
+          cur = cand;
+          improved = true;
+          break;
+        }
+        if (improved) break;
+      }
+      if (!improved) break;
+    }
+    return cur;
+  };
+
+  // Route shorter & straight-aligned wires first; longer buses fan cleanly around the outside
   const indexedWires = wires.map((wire, origIdx) => {
     const a = pinPos.get(pinKey(wire.from));
     const b = pinPos.get(pinKey(wire.to));
+    const aligned =
+      a && b && (Math.abs(a.world.x - b.world.x) < 0.5 || Math.abs(a.world.y - b.world.y) < 0.5)
+        ? 0
+        : 1;
     const dist = a && b ? Math.abs(a.world.x - b.world.x) + Math.abs(a.world.y - b.world.y) : 0;
-    return { wire, origIdx, dist };
+    return { wire, origIdx, aligned, dist };
   });
-  indexedWires.sort((a, b) => a.dist - b.dist || a.origIdx - b.origIdx);
+  indexedWires.sort((a, b) => a.aligned - b.aligned || a.dist - b.dist || a.origIdx - b.origIdx);
+
+  // Track staggered lane slots per component side so parallel bus exits fan out cleanly
+  const sideSlotCount = new Map<string, number>();
+  const nextStaggeredStub = (info: PinMeta): Point => {
+    const base = computeExitStubPoint(info.world, info.exitDir, info.partRect, info.partType);
+    if (!info.exitDir) return base;
+    const key = `${info.partId}:${info.exitDir}`;
+    const slot = sideSlotCount.get(key) ?? 0;
+    sideSlotCount.set(key, slot + 1);
+    const extra = (slot % 6) * GRID_STEP;
+    return applyStub(base, info.exitDir, extra);
+  };
 
   const routedWaypoints = new Map<string, Point[]>();
 
@@ -526,19 +841,27 @@ export function autoTidyWires(
     const toInfo = pinPos.get(pinKey(wire.to));
     if (!fromInfo || !toInfo) continue;
 
-    const startPt = computeExitStubPoint(
-      fromInfo.world,
-      fromInfo.exitDir,
-      fromInfo.partRect,
-      fromInfo.partType
-    );
-    const endPt = computeExitStubPoint(
-      toInfo.world,
-      toInfo.exitDir,
-      toInfo.partRect,
-      toInfo.partType
-    );
+    const netId = netlist.pinToNet.get(pinKey(wire.from)) ?? wire.id;
+    const startPt = nextStaggeredStub(fromInfo);
+    const endPt = nextStaggeredStub(toInfo);
 
+    // 1. Fast path: clean 0/1/2-bend collision-free & overlap-free schematic route
+    const fast = tryCleanFastRoute(fromInfo, toInfo, startPt, endPt, netId);
+    if (fast) {
+      registerFinalPath(fast, netId);
+      const inner = fast.slice(1, -1);
+      // For dead-straight 2-point wires, keep midpoint waypoint so routeWire preserves straightness without re-adding stubs
+      if (inner.length === 0) {
+        routedWaypoints.set(wire.id, [
+          { x: (fromInfo.world.x + toInfo.world.x) / 2, y: (fromInfo.world.y + toInfo.world.y) / 2 },
+        ]);
+      } else {
+        routedWaypoints.set(wire.id, inner);
+      }
+      continue;
+    }
+
+    // 2. Full obstacle-aware grid A* fallback with high turn & overlap penalties
     const sg = toGrid(startPt);
     const eg = toGrid(endPt);
 
@@ -561,14 +884,14 @@ export function autoTidyWires(
     const hInit = Math.abs(sg.gx - eg.gx) + Math.abs(sg.gy - eg.gy);
     for (let orient = 0; orient < 2; orient++) {
       const st = startCell * 2 + orient;
-      const initCost = startPreferredOrient >= 0 && orient !== startPreferredOrient ? 4.5 : 0;
+      const initCost = startPreferredOrient >= 0 && orient !== startPreferredOrient ? 10 : 0;
       gScore[st] = initCost;
       open.push(st, initCost + hInit);
     }
 
     let foundState = -1;
     let expanded = 0;
-    const maxExpand = 22_000;
+    const maxExpand = 26_000;
 
     while (open.size > 0 && expanded < maxExpand) {
       const curr = open.pop()!;
@@ -598,19 +921,19 @@ export function autoTidyWires(
           for (const bb of breadboards) {
             if (bb.partId === fromInfo.partId || bb.partId === toInfo.partId) continue;
             if (wx >= bb.rect.x1 && wx <= bb.rect.x2 && wy >= bb.rect.y1 && wy <= bb.rect.y2) {
-              base += 48;
+              base += 90;
               break;
             }
           }
         }
         if (nCell !== endCell && pinPadCell[nCell]) {
-          base += 35;
+          base += 45;
         }
 
-        const turnPenalty = nOrient !== prevOrient ? 3.5 : 0;
-        const sameLanePenalty = (d.horiz ? usedCellH[nCell] : usedCellV[nCell]) * 60;
-        const nearParallelPenalty = (d.horiz ? nearLaneH[nCell] : nearLaneV[nCell]) * 14;
-        const crossPenalty = (d.horiz ? usedCellV[nCell] : usedCellH[nCell]) * 4;
+        const turnPenalty = nOrient !== prevOrient ? 18 : 0;
+        const sameLanePenalty = (d.horiz ? usedCellH[nCell] : usedCellV[nCell]) * 320;
+        const nearParallelPenalty = (d.horiz ? nearLaneH[nCell] : nearLaneV[nCell]) * 10;
+        const crossPenalty = (d.horiz ? usedCellV[nCell] : usedCellH[nCell]) * 16;
 
         const tentativeG =
           currG + base + turnPenalty + sameLanePenalty + nearParallelPenalty + crossPenalty;
@@ -625,44 +948,23 @@ export function autoTidyWires(
 
     if (foundState < 0) continue;
 
-    // Reconstruct path in grid coordinates & mark occupied lanes + 1-cell parallel clearance buffers
-    const gridPath: Array<{ gx: number; gy: number; orient: number }> = [];
+    const gridPath: Array<{ gx: number; gy: number }> = [];
     let s = foundState;
     while (s >= 0) {
       const cell = s >> 1;
-      const orient = s & 1;
       const gx = cell % cols;
       const gy = (cell - gx) / cols;
-      gridPath.push({ gx, gy, orient });
+      gridPath.push({ gx, gy });
       s = cameFrom[s];
     }
     gridPath.reverse();
-
-    for (let i = 1; i < gridPath.length; i++) {
-      const prev = gridPath[i - 1];
-      const curr = gridPath[i];
-      const isHoriz = curr.gy === prev.gy;
-      const cell = curr.gy * cols + curr.gx;
-      const prevCell = prev.gy * cols + prev.gx;
-      if (isHoriz) {
-        usedCellH[cell]++;
-        usedCellH[prevCell]++;
-        if (curr.gy > 0) nearLaneH[(curr.gy - 1) * cols + curr.gx]++;
-        if (curr.gy + 1 < rows) nearLaneH[(curr.gy + 1) * cols + curr.gx]++;
-      } else {
-        usedCellV[cell]++;
-        usedCellV[prevCell]++;
-        if (curr.gx > 0) nearLaneV[curr.gy * cols + (curr.gx - 1)]++;
-        if (curr.gx + 1 < cols) nearLaneV[curr.gy * cols + (curr.gx + 1)]++;
-      }
-    }
 
     const gridWorldPts = gridPath.map((gp) => ({
       x: (gp.gx + gxMin) * GRID_STEP,
       y: (gp.gy + gyMin) * GRID_STEP,
     }));
 
-    const simplified = stitchStraightPinExits(
+    const stitched = stitchStraightPinExits(
       fromInfo.world,
       fromInfo.exitDir,
       startPt,
@@ -671,8 +973,17 @@ export function autoTidyWires(
       endPt,
       gridWorldPts
     );
-    const inner = simplified.slice(1, -1);
-    routedWaypoints.set(wire.id, inner);
+    const polished = polishOrthogonalPath(stitched, fromInfo, toInfo, netId);
+    registerFinalPath(polished, netId);
+
+    const inner = polished.slice(1, -1);
+    if (inner.length === 0) {
+      routedWaypoints.set(wire.id, [
+        { x: (fromInfo.world.x + toInfo.world.x) / 2, y: (fromInfo.world.y + toInfo.world.y) / 2 },
+      ]);
+    } else {
+      routedWaypoints.set(wire.id, inner);
+    }
   }
 
   return wires.map((w) => {

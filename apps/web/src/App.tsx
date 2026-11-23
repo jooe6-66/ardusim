@@ -9,8 +9,11 @@ import {
   Wire,
   autoTidyCircuit,
   autoTidyWires,
+  buildNetlist,
   isMcuBoardType,
   parseIntelHex,
+  pickWireColor,
+  pinKey,
 } from '@ardusim/sim-core';
 import { PART_MANIFEST_MAP } from '@ardusim/parts';
 import { CanvasToolMode, CircuitCanvas } from './canvas/CircuitCanvas';
@@ -39,6 +42,15 @@ interface CircuitHistoryState {
   parts: PartInstance[];
   wires: Wire[];
   hasManualLayout: boolean;
+}
+
+interface CopiedPartData {
+  type: string;
+  rotation: PartInstance['rotation'];
+  flipX?: boolean;
+  flipY?: boolean;
+  props: Record<string, unknown>;
+  origin: Point;
 }
 
 function makeId(prefix: string): string {
@@ -284,11 +296,13 @@ export const App: React.FC = () => {
   });
   const [resizingSplit, setResizingSplit] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [copiedPart, setCopiedPart] = useState<CopiedPartData | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const pasteStepRef = useRef(0);
   const latestDraftRef = useRef({ diagram, overrideHex, hasManualLayout });
   latestDraftRef.current = { diagram, overrideHex, hasManualLayout };
   const t = MESSAGES[lang];
@@ -699,6 +713,155 @@ export const App: React.FC = () => {
     showToast(t.partAddedToast(manifest.name[lang]));
   };
 
+  const findFreeCloneCoords = (partsList: PartInstance[], startX: number, startY: number): Point => {
+    let x = Math.round(startX / 12) * 12;
+    let y = Math.round(startY / 12) * 12;
+    for (let i = 0; i < 8; i++) {
+      const collides = partsList.some((p) => Math.hypot(p.x - x, p.y - y) < 12);
+      if (!collides) break;
+      x += 24;
+      y += 24;
+    }
+    return { x, y };
+  };
+
+  const handleCopyPart = useCallback(
+    (partId: string) => {
+      const target = diagram.parts.find((p) => p.id === partId);
+      if (!target || isMcuBoardType(target.type)) return;
+      const manifest = PART_MANIFEST_MAP.get(target.type);
+      if (!manifest) return;
+      setCopiedPart({
+        type: target.type,
+        rotation: target.rotation,
+        flipX: target.flipX,
+        flipY: target.flipY,
+        props: structuredClone(target.props),
+        origin: { x: target.x, y: target.y },
+      });
+      pasteStepRef.current = 0;
+      showToast(t.copiedToast(manifest.name[lang]));
+    },
+    [diagram.parts, lang, showToast, t]
+  );
+
+  const handlePastePart = useCallback(
+    (worldPos?: Point) => {
+      if (!copiedPart) return;
+      const manifest = PART_MANIFEST_MAP.get(copiedPart.type);
+      if (!manifest) return;
+      commitHistory(diagram.board, diagram.parts, diagram.wires);
+      let pos: Point;
+      if (worldPos) {
+        pos = findFreeCloneCoords(
+          diagram.parts,
+          worldPos.x - manifest.width / 2,
+          worldPos.y - manifest.height / 2
+        );
+      } else {
+        pasteStepRef.current += 1;
+        const delta = pasteStepRef.current * 36;
+        pos = findFreeCloneCoords(
+          diagram.parts,
+          copiedPart.origin.x + delta,
+          copiedPart.origin.y + delta
+        );
+      }
+      const nextPart: PartInstance = {
+        id: makeId(copiedPart.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
+        type: copiedPart.type,
+        x: pos.x,
+        y: pos.y,
+        rotation: copiedPart.rotation,
+        flipX: copiedPart.flipX,
+        flipY: copiedPart.flipY,
+        props: structuredClone(copiedPart.props),
+      };
+      setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
+      setSelectedPartId(nextPart.id);
+      setSelectedWireId(null);
+      if (isDesktopViewport()) setInspectorOpen(true);
+      showToast(t.pastedToast(manifest.name[lang]));
+    },
+    [commitHistory, copiedPart, diagram.board, diagram.parts, diagram.wires, lang, showToast, t]
+  );
+
+  const handleDuplicatePart = useCallback(
+    (partId: string) => {
+      const target = diagram.parts.find((p) => p.id === partId);
+      if (!target || isMcuBoardType(target.type)) return;
+      const manifest = PART_MANIFEST_MAP.get(target.type);
+      if (!manifest) return;
+      commitHistory(diagram.board, diagram.parts, diagram.wires);
+      const pos = findFreeCloneCoords(diagram.parts, target.x + 36, target.y + 36);
+      const nextPart: PartInstance = {
+        id: makeId(target.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
+        type: target.type,
+        x: pos.x,
+        y: pos.y,
+        rotation: target.rotation,
+        flipX: target.flipX,
+        flipY: target.flipY,
+        props: structuredClone(target.props),
+      };
+      setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
+      setSelectedPartId(nextPart.id);
+      setSelectedWireId(null);
+      if (isDesktopViewport()) setInspectorOpen(true);
+      showToast(t.duplicatedToast(manifest.name[lang]));
+    },
+    [commitHistory, diagram.board, diagram.parts, diagram.wires, lang, showToast, t]
+  );
+
+  // Desktop keyboard shortcuts for Copy / Paste / Duplicate (safely ignored inside editors/inputs)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (partPickerOpen || projectMenuOpen) return;
+      const el = e.target;
+      if (
+        el instanceof HTMLElement &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.tagName === 'SELECT' ||
+          el.isContentEditable ||
+          Boolean(el.closest('.cm-editor')))
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === 'c' && selectedPartId) {
+        const textSel = window.getSelection()?.toString();
+        if (textSel) return;
+        const target = diagram.parts.find((p) => p.id === selectedPartId);
+        if (target && !isMcuBoardType(target.type)) {
+          e.preventDefault();
+          handleCopyPart(selectedPartId);
+        }
+      } else if (key === 'v' && copiedPart) {
+        e.preventDefault();
+        handlePastePart();
+      } else if (key === 'd' && selectedPartId) {
+        const target = diagram.parts.find((p) => p.id === selectedPartId);
+        if (target && !isMcuBoardType(target.type)) {
+          e.preventDefault();
+          handleDuplicatePart(selectedPartId);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    copiedPart,
+    diagram.parts,
+    handleCopyPart,
+    handleDuplicatePart,
+    handlePastePart,
+    partPickerOpen,
+    projectMenuOpen,
+    selectedPartId,
+  ]);
+
   const handleMovePart = (
     partId: string,
     x: number,
@@ -735,27 +898,34 @@ export const App: React.FC = () => {
 
   const handleAddWire = (from: PinRef, to: PinRef, waypoints: Point[]) => {
     commitHistory(diagram.board, diagram.parts, diagram.wires);
-    const defaultColor =
-      from.pinId.includes('GND') || to.pinId.includes('GND')
-        ? '#1F2937'
-        : from.pinId === '5V' || to.pinId === '5V' || from.pinId === 'VCC' || to.pinId === 'VCC'
-          ? '#DC2626'
-          : '#0F6660';
+    const { color: pickedColor, unifyWireIds } = pickWireColor(
+      diagram.parts,
+      diagram.wires,
+      from,
+      to,
+      PART_MANIFEST_MAP
+    );
+    const unifySet = new Set(unifyWireIds);
+    const existingSynced =
+      unifySet.size > 0
+        ? diagram.wires.map((w) => (unifySet.has(w.id) ? { ...w, color: pickedColor } : w))
+        : diagram.wires;
+
     const wire: Wire = {
       id: makeId('w'),
       from,
       to,
-      color: defaultColor,
+      color: pickedColor,
       waypoints: waypoints.length > 0 ? waypoints : undefined,
     };
-    const nextWires = [...diagram.wires, wire];
+    const nextWires = [...existingSynced, wire];
     // Auto-route cleanly around obstacles when user connects pin-to-pin without manual bends
     const finalWires =
       waypoints.length === 0
         ? (() => {
             const routed = autoTidyWires(diagram.parts, nextWires, PART_MANIFEST_MAP);
             const routedNew = routed.find((w) => w.id === wire.id);
-            return [...diagram.wires, routedNew ?? wire];
+            return [...existingSynced, routedNew ?? wire];
           })()
         : nextWires;
     setDiagram((d) => ({ ...d, wires: finalWires }));
@@ -836,10 +1006,19 @@ export const App: React.FC = () => {
   };
 
   const handleUpdateWireColor = (wireId: string, color: string) => {
-    setDiagram((d) => ({
-      ...d,
-      wires: d.wires.map((w) => (w.id === wireId ? { ...w, color } : w)),
-    }));
+    setDiagram((d) => {
+      const target = d.wires.find((w) => w.id === wireId);
+      if (!target) return d;
+      const net = buildNetlist(d.parts, d.wires, PART_MANIFEST_MAP);
+      const targetNet = net.pinToNet.get(pinKey(target.from));
+      return {
+        ...d,
+        wires: d.wires.map((w) => {
+          const sameNet = targetNet !== undefined && net.pinToNet.get(pinKey(w.from)) === targetNet;
+          return w.id === wireId || sameNet ? { ...w, color } : w;
+        }),
+      };
+    });
   };
 
   const handleUpdateWireWaypoints = (
@@ -1134,6 +1313,10 @@ export const App: React.FC = () => {
               onUpdateWireWaypoints={handleUpdateWireWaypoints}
               onDeleteWire={handleDeleteWire}
               onDeletePart={handleDeletePart}
+              hasCopiedPart={Boolean(copiedPart)}
+              onCopyPart={handleCopyPart}
+              onPastePart={handlePastePart}
+              onDuplicatePart={handleDuplicatePart}
               onPressButton={handlePressButton}
               onPressKeypadKey={handlePressKeypadKey}
               pressedButtons={pressedButtons}

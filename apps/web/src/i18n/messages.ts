@@ -190,6 +190,15 @@ export interface Messages {
   l298nReg5vLabel: string;
   l298nReg5vOn: string;
   l298nReg5vOff: string;
+  ctxMenuLabel: string;
+  ctxCanvasTitle: string;
+  ctxCopy: string;
+  ctxPaste: string;
+  ctxPasteHere: string;
+  ctxDuplicate: string;
+  copiedToast: (name: string) => string;
+  pastedToast: (name: string) => string;
+  duplicatedToast: (name: string) => string;
 }
 
 export const MESSAGES: Record<Lang, Messages> = {
@@ -383,6 +392,15 @@ export const MESSAGES: Record<Lang, Messages> = {
     l298nReg5vLabel: 'Regulator 5V Onboard',
     l298nReg5vOn: 'Jumper 5V: Aktif',
     l298nReg5vOff: 'Jumper 5V: Nonaktif',
+    ctxMenuLabel: 'Menu konteks komponen',
+    ctxCanvasTitle: 'Kanvas',
+    ctxCopy: 'Salin',
+    ctxPaste: 'Tempel',
+    ctxPasteHere: 'Tempel di sini',
+    ctxDuplicate: 'Duplikat',
+    copiedToast: (name) => `${name} disalin`,
+    pastedToast: (name) => `${name} ditempel ke kanvas`,
+    duplicatedToast: (name) => `${name} diduplikat`,
   },
   en: {
     appName: 'ArduSim',
@@ -574,5 +592,14 @@ export const MESSAGES: Record<Lang, Messages> = {
     l298nReg5vLabel: 'Onboard 5V Regulator',
     l298nReg5vOn: '5V Jumper: Enabled',
     l298nReg5vOff: '5V Jumper: Disabled',
+    ctxMenuLabel: 'Component context menu',
+    ctxCanvasTitle: 'Canvas',
+    ctxCopy: 'Copy',
+    ctxPaste: 'Paste',
+    ctxPasteHere: 'Paste here',
+    ctxDuplicate: 'Duplicate',
+    copiedToast: (name) => `Copied ${name}`,
+    pastedToast: (name) => `Pasted ${name} to canvas`,
+    duplicatedToast: (name) => `Duplicated ${name}`,
   },
 };

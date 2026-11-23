@@ -22,11 +22,13 @@ import { Lang, Messages } from '../i18n/messages';
 const WIRE_COLORS = [
   '#DC2626',
   '#1F2937',
-  '#0F6660',
   '#2563EB',
-  '#D97706',
   '#16A34A',
+  '#D97706',
   '#7C3AED',
+  '#0891B2',
+  '#DB2777',
+  '#0F766E',
   '#EA580C',
 ];
 

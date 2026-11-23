@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   PartInstance,
   PinDef,
@@ -47,6 +47,10 @@ interface CircuitCanvasProps {
   onUpdateWireWaypoints: (wireId: string, waypoints: Point[] | undefined, recordHistory: boolean) => void;
   onDeleteWire: (wireId: string) => void;
   onDeletePart: (partId: string) => void;
+  hasCopiedPart: boolean;
+  onCopyPart: (partId: string) => void;
+  onPastePart: (worldPos?: Point) => void;
+  onDuplicatePart: (partId: string) => void;
   onPressButton: (partId: string, pressed: boolean) => void;
   onPressKeypadKey: (partId: string, row: number, col: number, pressed: boolean) => void;
   pressedButtons: Set<string>;
@@ -80,6 +84,22 @@ interface RoutedWireRender {
   toPin: WorldPin;
   pts: Point[];
   d: string;
+}
+
+interface AlignmentGuide {
+  orientation: 'v' | 'h';
+  coord: number;
+  start: number;
+  end: number;
+  kind: 'pin' | 'edge' | 'wire';
+  marker?: Point;
+}
+
+interface CanvasContextMenu {
+  stageX: number;
+  stageY: number;
+  world: Point;
+  partId: string | null;
 }
 
 const SNAP_GRID = 12;
@@ -161,6 +181,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onUpdateWireWaypoints,
   onDeleteWire,
   onDeletePart,
+  hasCopiedPart,
+  onCopyPart,
+  onPastePart,
+  onDuplicatePart,
   onPressButton,
   onPressKeypadKey,
   pressedButtons,
@@ -184,6 +208,15 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   const [wireDraft, setWireDraft] = useState<ActiveWireDraft | null>(null);
   const [loupe, setLoupe] = useState<{ x: number; y: number; text: string } | null>(null);
   const [hoveredPinKey, setHoveredPinKey] = useState<string | null>(null);
+  const [guides, setGuides] = useState<AlignmentGuide[]>([]);
+  const [contextMenu, setContextMenu] = useState<CanvasContextMenu | null>(null);
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressStartRef = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null);
+  const longPressOpenedAtRef = useRef(0);
+  const suppressNextUpRef = useRef(false);
 
   const pointersRef = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
   const pinchStartRef = useRef<{
@@ -206,9 +239,18 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   const lastCornerTapRef = useRef<{ wireId: string; cornerIdx: number; time: number } | null>(null);
   const loupeTimerRef = useRef<number | null>(null);
 
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  }, []);
+
   useEffect(() => {
     return () => {
       if (loupeTimerRef.current !== null) window.clearTimeout(loupeTimerRef.current);
+      if (longPressTimerRef.current !== null) window.clearTimeout(longPressTimerRef.current);
     };
   }, []);
 
@@ -452,6 +494,94 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     return () => window.removeEventListener('keydown', onKey);
   }, [wireDraft]);
 
+  const openContextMenuAt = useCallback(
+    (clientX: number, clientY: number) => {
+      const st = clientToStage(clientX, clientY);
+      const world = clientToWorld(clientX, clientY);
+      const hitPart = findPartAtWorld(world);
+      setWireDraft(null);
+      setGuides([]);
+      setLoupe(null);
+      dragStateRef.current = null;
+      setMenuPos(null);
+      setContextMenu({
+        stageX: st.x,
+        stageY: st.y,
+        world,
+        partId: hitPart?.id ?? null,
+      });
+    },
+    [clientToStage, clientToWorld, findPartAtWorld]
+  );
+
+  useLayoutEffect(() => {
+    if (!contextMenu) {
+      setMenuPos(null);
+      return;
+    }
+    const stage = stageRef.current;
+    const menu = contextMenuRef.current;
+    if (!stage || !menu) return;
+    const sw = stage.clientWidth;
+    const sh = stage.clientHeight;
+    const mw = menu.offsetWidth || 210;
+    const mh = menu.offsetHeight || 220;
+    const pad = 8;
+    let left = contextMenu.stageX;
+    let top = contextMenu.stageY;
+    if (left + mw + pad > sw) {
+      left = Math.max(pad, contextMenu.stageX - mw);
+    }
+    if (top + mh + pad > sh) {
+      top = Math.max(pad, contextMenu.stageY - mh);
+    }
+    left = Math.max(pad, Math.min(sw - mw - pad, left));
+    top = Math.max(pad, Math.min(sh - mh - pad, top));
+    setMenuPos({ left, top });
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const raf = requestAnimationFrame(() => {
+      contextMenuRef.current?.focus();
+    });
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setContextMenu(null);
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const items = Array.from(
+          contextMenuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? []
+        );
+        if (items.length === 0) return;
+        e.preventDefault();
+        const curIdx = items.indexOf(document.activeElement as HTMLButtonElement);
+        const dir = e.key === 'ArrowDown' ? 1 : -1;
+        const nextIdx = curIdx < 0 ? (dir > 0 ? 0 : items.length - 1) : (curIdx + dir + items.length) % items.length;
+        items[nextIdx]?.focus();
+      }
+    };
+    const onOutsidePointer = (e: PointerEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    const onClose = () => setContextMenu(null);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onOutsidePointer, true);
+    window.addEventListener('resize', onClose);
+    window.addEventListener('blur', onClose);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onOutsidePointer, true);
+      window.removeEventListener('resize', onClose);
+      window.removeEventListener('blur', onClose);
+    };
+  }, [contextMenu]);
+
   const zoomBy = useCallback((factor: number) => {
     const rect = stageRef.current?.getBoundingClientRect();
     const cx = rect ? rect.width / 2 : 300;
@@ -467,9 +597,248 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     });
   }, []);
 
+  const computePartAlignmentSnap = useCallback(
+    (partId: string, rawX: number, rawY: number): { x: number; y: number; guides: AlignmentGuide[] } => {
+      const part = parts.find((p) => p.id === partId);
+      const manifest = part ? PART_MANIFEST_MAP.get(part.type) : undefined;
+      if (!part || !manifest) {
+        return { x: snap(rawX), y: snap(rawY), guides: [] };
+      }
+
+      const THRESH = 8;
+      const candidatePart: PartInstance = { ...part, x: rawX, y: rawY };
+      const candPins =
+        part.type === 'breadboard-half'
+          ? []
+          : manifest.pins.map((pin) => ({
+              pin,
+              world: getPinWorldPosition(candidatePart, manifest, pin),
+            }));
+
+      const connectedOtherPins = new Set<string>();
+      for (const w of wires) {
+        if (w.from.partId === partId) connectedOtherPins.add(pinKey(w.to));
+        else if (w.to.partId === partId) connectedOtherPins.add(pinKey(w.from));
+      }
+
+      let bestDx: { delta: number; score: number; guide: AlignmentGuide } | null = null;
+      let bestDy: { delta: number; score: number; guide: AlignmentGuide } | null = null;
+
+      // 1. Pin-to-pin alignment (so cables between components snap dead straight!)
+      for (const cp of candPins) {
+        for (const wp of worldPins) {
+          if (wp.part.id === partId || wp.part.type === 'breadboard-half') continue;
+          const isLinked = connectedOtherPins.has(wp.key);
+          const bonus = isLinked ? -2.5 : 0;
+
+          const dx = wp.world.x - cp.world.x;
+          const absDx = Math.abs(dx);
+          if (absDx <= THRESH) {
+            const score = absDx + bonus;
+            if (!bestDx || score < bestDx.score) {
+              bestDx = {
+                delta: dx,
+                score,
+                guide: {
+                  orientation: 'v',
+                  coord: wp.world.x,
+                  start: Math.min(cp.world.y, wp.world.y) - 14,
+                  end: Math.max(cp.world.y, wp.world.y) + 14,
+                  kind: 'pin',
+                  marker: wp.world,
+                },
+              };
+            }
+          }
+
+          const dy = wp.world.y - cp.world.y;
+          const absDy = Math.abs(dy);
+          if (absDy <= THRESH) {
+            const score = absDy + bonus;
+            if (!bestDy || score < bestDy.score) {
+              bestDy = {
+                delta: dy,
+                score,
+                guide: {
+                  orientation: 'h',
+                  coord: wp.world.y,
+                  start: Math.min(cp.world.x, wp.world.x) - 14,
+                  end: Math.max(cp.world.x, wp.world.x) + 14,
+                  kind: 'pin',
+                  marker: wp.world,
+                },
+              };
+            }
+          }
+        }
+      }
+
+      // 2. Component edge & center alignment fallback (if no closer pin alignment matched)
+      const rot = part.rotation === 90 || part.rotation === 270;
+      const cw = rot ? manifest.height : manifest.width;
+      const ch = rot ? manifest.width : manifest.height;
+      const cx = rawX + manifest.width / 2;
+      const cy = rawY + manifest.height / 2;
+      const myXs = [cx - cw / 2, cx, cx + cw / 2];
+      const myYs = [cy - ch / 2, cy, cy + ch / 2];
+
+      for (const other of parts) {
+        if (other.id === partId) continue;
+        const om = PART_MANIFEST_MAP.get(other.type);
+        if (!om) continue;
+        const orot = other.rotation === 90 || other.rotation === 270;
+        const ow = orot ? om.height : om.width;
+        const oh = orot ? om.width : om.height;
+        const ocx = other.x + om.width / 2;
+        const ocy = other.y + om.height / 2;
+        const oxs = [ocx - ow / 2, ocx, ocx + ow / 2];
+        const oys = [ocy - oh / 2, ocy, ocy + oh / 2];
+
+        for (const mx of myXs) {
+          for (const ox of oxs) {
+            const dx = ox - mx;
+            const absDx = Math.abs(dx);
+            if (absDx <= THRESH) {
+              const score = absDx + 1.5;
+              if (!bestDx || score < bestDx.score) {
+                bestDx = {
+                  delta: dx,
+                  score,
+                  guide: {
+                    orientation: 'v',
+                    coord: ox,
+                    start: Math.min(cy - ch / 2, ocy - oh / 2) - 16,
+                    end: Math.max(cy + ch / 2, ocy + oh / 2) + 16,
+                    kind: 'edge',
+                  },
+                };
+              }
+            }
+          }
+        }
+        for (const my of myYs) {
+          for (const oy of oys) {
+            const dy = oy - my;
+            const absDy = Math.abs(dy);
+            if (absDy <= THRESH) {
+              const score = absDy + 1.5;
+              if (!bestDy || score < bestDy.score) {
+                bestDy = {
+                  delta: dy,
+                  score,
+                  guide: {
+                    orientation: 'h',
+                    coord: oy,
+                    start: Math.min(cx - cw / 2, ocx - ow / 2) - 16,
+                    end: Math.max(cx + cw / 2, ocx + ow / 2) + 16,
+                    kind: 'edge',
+                  },
+                };
+              }
+            }
+          }
+        }
+      }
+
+      const finalX = bestDx ? Math.round((rawX + bestDx.delta) * 10) / 10 : snap(rawX);
+      const finalY = bestDy ? Math.round((rawY + bestDy.delta) * 10) / 10 : snap(rawY);
+      const nextGuides: AlignmentGuide[] = [];
+      if (bestDx) nextGuides.push(bestDx.guide);
+      if (bestDy) nextGuides.push(bestDy.guide);
+      return { x: finalX, y: finalY, guides: nextGuides };
+    },
+    [parts, wires, worldPins]
+  );
+
+  const computeWirePointSnap = useCallback(
+    (
+      world: Point,
+      excludeWireId?: string,
+      anchorPts: Point[] = []
+    ): { x: number; y: number; guides: AlignmentGuide[] } => {
+      const THRESH = 7;
+      type WireSnapMatch = { coord: number; dist: number; guide: AlignmentGuide };
+      const best: { x: WireSnapMatch | null; y: WireSnapMatch | null } = { x: null, y: null };
+
+      const considerX = (coord: number, y1: number, y2: number, kind: 'pin' | 'wire', marker?: Point) => {
+        const d = Math.abs(coord - world.x);
+        if (d <= THRESH && (!best.x || d < best.x.dist)) {
+          best.x = {
+            coord,
+            dist: d,
+            guide: {
+              orientation: 'v',
+              coord,
+              start: Math.min(y1, y2, world.y) - 12,
+              end: Math.max(y1, y2, world.y) + 12,
+              kind,
+              marker,
+            },
+          };
+        }
+      };
+
+      const considerY = (coord: number, x1: number, x2: number, kind: 'pin' | 'wire', marker?: Point) => {
+        const d = Math.abs(coord - world.y);
+        if (d <= THRESH && (!best.y || d < best.y.dist)) {
+          best.y = {
+            coord,
+            dist: d,
+            guide: {
+              orientation: 'h',
+              coord,
+              start: Math.min(x1, x2, world.x) - 12,
+              end: Math.max(x1, x2, world.x) + 12,
+              kind,
+              marker,
+            },
+          };
+        }
+      };
+
+      // Snap against active wire anchors (start pin, end pin, previous waypoints)
+      for (const ap of anchorPts) {
+        considerX(ap.x, ap.y, world.y, 'pin', ap);
+        considerY(ap.y, ap.x, world.x, 'pin', ap);
+      }
+
+      // Snap against non-breadboard component pins so bends line up straight with pins
+      for (const wp of worldPins) {
+        if (wp.part.type === 'breadboard-half') continue;
+        considerX(wp.world.x, wp.world.y, world.y, 'pin', wp.world);
+        considerY(wp.world.y, wp.world.x, world.x, 'pin', wp.world);
+      }
+
+      // Snap against segments of other routed wires so parallel turns align neatly
+      for (const rw of routedWires) {
+        if (rw.wire.id === excludeWireId) continue;
+        for (let i = 1; i < rw.pts.length; i++) {
+          const a = rw.pts[i - 1];
+          const b = rw.pts[i];
+          if (Math.abs(a.x - b.x) < 0.5) {
+            considerX(a.x, a.y, b.y, 'wire');
+          } else if (Math.abs(a.y - b.y) < 0.5) {
+            considerY(a.y, a.x, b.x, 'wire');
+          }
+        }
+      }
+
+      const nextGuides: AlignmentGuide[] = [];
+      if (best.x) nextGuides.push(best.x.guide);
+      if (best.y) nextGuides.push(best.y.guide);
+      return {
+        x: best.x ? best.x.coord : snap(world.x),
+        y: best.y ? best.y.coord : snap(world.y),
+        guides: nextGuides,
+      };
+    },
+    [worldPins, routedWires]
+  );
+
   const handlePinTap = useCallback(
     (wp: WorldPin) => {
       const ref: PinRef = { partId: wp.part.id, pinId: wp.pin.id };
+      setGuides([]);
       if (!wireDraft) {
         setWireDraft({
           from: ref,
@@ -519,10 +888,22 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   };
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    if (e.pointerType !== 'touch' && e.button !== 0) {
+      return;
+    }
+    if (contextMenu) {
+      setContextMenu(null);
+    }
+
+    try {
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic or already-released pointer ids
+    }
     pointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
     if (pointersRef.current.size === 2) {
+      clearLongPress();
       const prevDrag = dragStateRef.current;
       if (prevDrag?.kind === 'button') onPressButton(prevDrag.partId, false);
       else if (prevDrag?.kind === 'keypad') onPressKeypadKey(prevDrag.partId, prevDrag.row, prevDrag.col, false);
@@ -556,15 +937,46 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
         return;
       }
+      const startPin = pinLookup.get(pinKey(wireDraft.from));
+      const anchors = [
+        ...(startPin ? [startPin.world] : []),
+        ...wireDraft.waypoints,
+      ];
+      const snappedPt = computeWirePointSnap(world, undefined, anchors);
       setWireDraft((prev) =>
-        prev ? { ...prev, waypoints: [...prev.waypoints, { x: snap(world.x), y: snap(world.y) }] } : null
+        prev ? { ...prev, waypoints: [...prev.waypoints, { x: snappedPt.x, y: snappedPt.y }] } : null
       );
+      setGuides(snappedPt.guides);
       return;
     }
 
     const hitPart = findPartAtWorld(world);
     const hitNonBbPart = hitPart && hitPart.type !== 'breadboard-half' ? hitPart : null;
     const hitWire = findWireAtStage(st, isTouch);
+
+    // Mobile / touch long-press opens floating context menu (Copy / Paste / Duplicate / Rotate / Delete)
+    const isLiveTouchControl =
+      running && (hitNonBbPart?.type === 'pushbutton' || hitNonBbPart?.type === 'keypad-4x4');
+    if (isTouch && pointersRef.current.size === 1 && !isLiveTouchControl) {
+      clearLongPress();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      longPressStartRef.current = { pointerId: e.pointerId, clientX: startX, clientY: startY };
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTimerRef.current = null;
+        longPressStartRef.current = null;
+        suppressNextUpRef.current = true;
+        longPressOpenedAtRef.current = Date.now();
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate(12);
+          } catch {
+            // Ignore unsupported vibration
+          }
+        }
+        openContextMenuAt(startX, startY);
+      }, 460);
+    }
 
     // 1b. Drag handles on currently selected wire (reshape corners or slide/bend segments manually)
     if (
@@ -756,7 +1168,18 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       pointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
     }
 
+    if (longPressStartRef.current && longPressStartRef.current.pointerId === e.pointerId) {
+      const movedPx = Math.hypot(
+        e.clientX - longPressStartRef.current.clientX,
+        e.clientY - longPressStartRef.current.clientY
+      );
+      if (movedPx > 8) {
+        clearLongPress();
+      }
+    }
+
     if (pointersRef.current.size === 2 && pinchStartRef.current) {
+      clearLongPress();
       const pts = Array.from(pointersRef.current.values());
       const dist = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
       const mid = clientToStage((pts[0].clientX + pts[1].clientX) / 2, (pts[0].clientY + pts[1].clientY) / 2);
@@ -778,16 +1201,23 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         e.clientY,
         isTouch ? PIN_CAPTURE_TOUCH_WIRE_PX : PIN_CAPTURE_MOUSE_PX
       );
-      setWireDraft((prev) =>
-        prev ? { ...prev, cursorWorld: nearPin ? nearPin.wp.world : world } : null
-      );
       if (nearPin) {
+        setWireDraft((prev) => (prev ? { ...prev, cursorWorld: nearPin.wp.world } : null));
+        setGuides([]);
         setLoupe({
           x: st.x,
           y: Math.max(36, st.y - (isTouch ? 48 : 22)),
           text: nearPin.wp.displayLabel,
         });
       } else {
+        const startPin = pinLookup.get(pinKey(wireDraft.from));
+        const anchors = [
+          ...(startPin ? [startPin.world] : []),
+          ...wireDraft.waypoints,
+        ];
+        const snappedPt = computeWirePointSnap(world, undefined, anchors);
+        setWireDraft((prev) => (prev ? { ...prev, cursorWorld: { x: snappedPt.x, y: snappedPt.y } } : null));
+        setGuides(snappedPt.guides);
         setLoupe(null);
       }
       return;
@@ -797,8 +1227,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     if (drag?.kind === 'wire-corner') {
       const distPx = Math.hypot(e.clientX - drag.startClient.x, e.clientY - drag.startClient.y);
       if (drag.moved || distPx > 3) {
-        const nextWp = moveWireCorner(drag.origPts, drag.cornerIdx, snap(world.x), snap(world.y));
+        const anchors = [drag.origPts[0], drag.origPts[drag.origPts.length - 1]];
+        const snappedPt = computeWirePointSnap(world, drag.wireId, anchors);
+        const nextWp = moveWireCorner(drag.origPts, drag.cornerIdx, snappedPt.x, snappedPt.y);
         onUpdateWireWaypoints(drag.wireId, nextWp, !drag.historySaved);
+        setGuides(snappedPt.guides);
         drag.moved = true;
         drag.historySaved = true;
       }
@@ -808,8 +1241,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     if (drag?.kind === 'wire-segment') {
       const distPx = Math.hypot(e.clientX - drag.startClient.x, e.clientY - drag.startClient.y);
       if (drag.moved || distPx > 3) {
-        const nextWp = moveWireSegment(drag.origPts, drag.segIdx, snap(world.x), snap(world.y));
+        const anchors = [drag.origPts[0], drag.origPts[drag.origPts.length - 1]];
+        const snappedPt = computeWirePointSnap(world, drag.wireId, anchors);
+        const nextWp = moveWireSegment(drag.origPts, drag.segIdx, snappedPt.x, snappedPt.y);
         onUpdateWireWaypoints(drag.wireId, nextWp, !drag.historySaved);
+        setGuides(snappedPt.guides);
         drag.moved = true;
         drag.historySaved = true;
       }
@@ -820,13 +1256,15 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       const dx = world.x - drag.startWorld.x;
       const dy = world.y - drag.startWorld.y;
       if (drag.moved || Math.hypot(dx, dy) > 4) {
+        const aligned = computePartAlignmentSnap(drag.partId, drag.origPart.x + dx, drag.origPart.y + dy);
         onMovePart(
           drag.partId,
-          snap(drag.origPart.x + dx),
-          snap(drag.origPart.y + dy),
+          aligned.x,
+          aligned.y,
           false,
           !drag.historySaved
         );
+        setGuides(aligned.guides);
         drag.moved = true;
         drag.historySaved = true;
       }
@@ -860,13 +1298,23 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   };
 
   const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    clearLongPress();
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) {
       pinchStartRef.current = null;
     }
 
+    if (suppressNextUpRef.current) {
+      suppressNextUpRef.current = false;
+      dragStateRef.current = null;
+      return;
+    }
+
     const drag = dragStateRef.current;
     dragStateRef.current = null;
+    if (guides.length > 0 && !wireDraft) {
+      setGuides([]);
+    }
 
     if (drag?.kind === 'wire-corner') {
       if (!drag.moved) {
@@ -929,6 +1377,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
   const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
+    if (contextMenu) setContextMenu(null);
     const st = clientToStage(e.clientX, e.clientY);
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
     setView((prev) => {
@@ -940,6 +1389,13 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         y: st.y - (st.y - prev.y) * ratio,
       };
     });
+  };
+
+  const onSvgContextMenu = (e: React.MouseEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    if (Date.now() - longPressOpenedAtRef.current < 650) return;
+    clearLongPress();
+    openContextMenuAt(e.clientX, e.clientY);
   };
 
   const draftPath = useMemo(() => {
@@ -989,6 +1445,16 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
   const canDeleteSelected =
     Boolean(selectedWireId) || (Boolean(selectedPartObj) && !isMcuBoardType(selectedPartObj!.type));
+
+  const ctxPartObj = useMemo(
+    () => (contextMenu?.partId ? parts.find((p) => p.id === contextMenu.partId) ?? null : null),
+    [contextMenu, parts]
+  );
+  const ctxPartIsMcu = ctxPartObj ? isMcuBoardType(ctxPartObj.type) : false;
+  const ctxTitle = ctxPartObj
+    ? PART_MANIFEST_MAP.get(ctxPartObj.type)?.name[lang] ?? ctxPartObj.type
+    : t.ctxCanvasTitle;
+  const canTidyNow = hasManualLayout ? wires.length > 0 : parts.length > 1 || wires.length > 0;
 
   return (
     <div className="canvas-stage">
@@ -1102,6 +1568,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
           onWheel={onWheel}
+          onContextMenu={onSvgContextMenu}
           role="img"
           aria-label="Arduino circuit workbench canvas"
         >
@@ -1151,7 +1618,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     snapshot={snapshot}
                     pressed={pressedButtons.has(part.id)}
                     pressedKeypadKeys={pressedKeypadKeys}
-                    selected={selectedPartId === part.id}
+                    selected={selectedPartId === part.id || contextMenu?.partId === part.id}
                   />
                 </g>
               );
@@ -1269,6 +1736,41 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
               </g>
             )}
 
+            {guides.length > 0 && (
+              <g pointerEvents="none">
+                {guides.map((g, idx) => {
+                  const stroke = g.kind === 'pin' ? 'var(--accent)' : 'var(--primary)';
+                  const sw = Math.max(1, 1.35 / view.scale);
+                  const dash = `${5 / view.scale} ${3.5 / view.scale}`;
+                  const mr = Math.max(3, 4 / view.scale);
+                  return (
+                    <g key={`guide-${idx}`}>
+                      <line
+                        x1={g.orientation === 'v' ? g.coord : g.start}
+                        y1={g.orientation === 'v' ? g.start : g.coord}
+                        x2={g.orientation === 'v' ? g.coord : g.end}
+                        y2={g.orientation === 'v' ? g.end : g.coord}
+                        stroke={stroke}
+                        strokeWidth={sw}
+                        strokeDasharray={dash}
+                        opacity={0.9}
+                      />
+                      {g.marker && (
+                        <circle
+                          cx={g.marker.x}
+                          cy={g.marker.y}
+                          r={mr}
+                          fill="none"
+                          stroke={stroke}
+                          strokeWidth={sw}
+                        />
+                      )}
+                    </g>
+                  );
+                })}
+              </g>
+            )}
+
             {(mode === 'wire' || wireDraft) &&
               worldPins
                 .filter((wp) => wp.part.type !== 'breadboard-half')
@@ -1321,8 +1823,244 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           </div>
         )}
 
+        {/* Right-click (desktop) & Long-press (mobile) floating context menu */}
+        {contextMenu && (
+          <div
+            ref={contextMenuRef}
+            className="context-menu"
+            role="menu"
+            tabIndex={-1}
+            aria-label={t.ctxMenuLabel}
+            style={{
+              left: menuPos ? menuPos.left : contextMenu.stageX,
+              top: menuPos ? menuPos.top : contextMenu.stageY,
+              visibility: menuPos ? 'visible' : 'hidden',
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="context-menu-header">{ctxTitle}</div>
+
+            {ctxPartObj ? (
+              <>
+                {!ctxPartIsMcu && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="context-menu-item"
+                      onClick={() => {
+                        onCopyPart(ctxPartObj.id);
+                        setContextMenu(null);
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <rect x="5.5" y="5.5" width="8" height="8" rx="1.4" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M10.5 5.5V3.9C10.5 3.1 9.9 2.5 9.1 2.5H3.9C3.1 2.5 2.5 3.1 2.5 3.9V9.1C2.5 9.9 3.1 10.5 3.9 10.5H5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                      <span className="context-menu-label">{t.ctxCopy}</span>
+                      <span className="context-menu-kbd">Ctrl+C</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="context-menu-item"
+                      onClick={() => {
+                        onDuplicatePart(ctxPartObj.id);
+                        setContextMenu(null);
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <rect x="2.5" y="2.5" width="7.5" height="7.5" rx="1.4" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="6" y="6" width="7.5" height="7.5" rx="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M9.75 8.2V11.3M8.2 9.75H11.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                      </svg>
+                      <span className="context-menu-label">{t.ctxDuplicate}</span>
+                      <span className="context-menu-kbd">Ctrl+D</span>
+                    </button>
+                  </>
+                )}
+
+                {hasCopiedPart && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="context-menu-item"
+                    onClick={() => {
+                      onPastePart({ x: contextMenu.world.x + 24, y: contextMenu.world.y + 24 });
+                      setContextMenu(null);
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <rect x="3.5" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                      <path d="M6 4V3C6 2.45 6.45 2 7 2H9C9.55 2 10 2.45 10 3V4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      <path d="M6 8H10M6 10.5H8.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                    </svg>
+                    <span className="context-menu-label">{t.ctxPaste}</span>
+                    <span className="context-menu-kbd">Ctrl+V</span>
+                  </button>
+                )}
+
+                {(!ctxPartIsMcu || hasCopiedPart) && (
+                  <div className="context-menu-divider" role="separator" />
+                )}
+
+                {!ctxPartIsMcu && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="context-menu-item"
+                    onClick={() => {
+                      onRotatePart(ctxPartObj.id);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M12.5 5.5A4.8 4.8 0 1 0 12.8 9.2M12.5 2.5V5.8H9.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span className="context-menu-label">{t.rotate}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onFlipPart(ctxPartObj.id, 'x');
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 2.5V13.5M5.5 5.5L2.5 8L5.5 10.5M10.5 5.5L13.5 8L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.flipH}</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onFlipPart(ctxPartObj.id, 'y');
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2.5 8H13.5M5.5 5.5L8 2.5L10.5 5.5M5.5 10.5L8 13.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.flipV}</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onSelectPart(ctxPartObj.id);
+                    onOpenInspector();
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M3 4.5H13M3 8H13M3 11.5H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <circle cx="6" cy="4.5" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+                    <circle cx="10.5" cy="8" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+                    <circle cx="7" cy="11.5" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+                  </svg>
+                  <span className="context-menu-label">{t.inspector}</span>
+                </button>
+
+                {!ctxPartIsMcu && (
+                  <>
+                    <div className="context-menu-divider" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="context-menu-item context-menu-item--danger"
+                      onClick={() => {
+                        onDeletePart(ctxPartObj.id);
+                        setContextMenu(null);
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M3 4.5H13M6 4.5V3H10V4.5M5 4.5L5.6 13H10.4L11 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      <span className="context-menu-label">{t.deleteSelected}</span>
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  disabled={!hasCopiedPart}
+                  onClick={() => {
+                    onPastePart(contextMenu.world);
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <rect x="3.5" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M6 4V3C6 2.45 6.45 2 7 2H9C9.55 2 10 2.45 10 3V4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M6 8H10M6 10.5H8.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.ctxPasteHere}</span>
+                  <span className="context-menu-kbd">Ctrl+V</span>
+                </button>
+                <div className="context-menu-divider" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onOpenPartPicker();
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.partPickerTitle}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  disabled={!canTidyNow}
+                  onClick={() => {
+                    onTidyWires();
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.tidyWires}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    fitView();
+                    setContextMenu(null);
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2.5 6V3.5C2.5 2.95 2.95 2.5 3.5 2.5H6M10 2.5H12.5C13.05 2.5 13.5 2.95 13.5 3.5V6M13.5 10V12.5C13.5 13.05 13.05 13.5 12.5 13.5H10M6 13.5H3.5C2.95 13.5 2.5 13.05 2.5 12.5V10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="context-menu-label">{t.zoomFit}</span>
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Quick-action bar when a part or wire is selected and Inspector is closed */}
-        {!wireDraft && !inspectorOpen && (selectedPartObj || selectedWireId) && (
+        {!wireDraft && !inspectorOpen && !contextMenu && (selectedPartObj || selectedWireId) && (
           <div className="selection-pill" role="toolbar" aria-label={t.inspector}>
             {selectedLabel && <span className="selection-pill-label">{selectedLabel}</span>}
             <button type="button" className="btn btn-compact btn-primary" onClick={onOpenInspector}>

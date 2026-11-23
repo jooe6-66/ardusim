@@ -9,8 +9,11 @@ import {
   moveWireSegment,
   parseIntelHex,
   PassiveCircuitSolver,
+  pickWireColor,
   rotateExitDir,
   routeWire,
+  WIRE_COLOR_GND,
+  WIRE_COLOR_POWER,
   PartInstance,
   PartManifest,
   Wire,
@@ -598,4 +601,78 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
   // (12V - 1.4V drop) * 50% duty = 5.3V across motor
   assert.ok(boostOut.motorStates.m1.voltage > 4.6 && boostOut.motorStates.m1.voltage < 5.7, `Got motor V=${boostOut.motorStates.m1.voltage}`);
   assert.ok(boostOut.motorStates.m1.rpm > 200);
+});
+
+test('pickWireColor assigns distinct colors per signal net and reuses the same color on the same net', () => {
+  const parts: PartInstance[] = [
+    { id: 'u1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'bb1', type: 'breadboard-half', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'r1', type: 'resistor', x: 0, y: 0, rotation: 0, props: { value: 220, unit: 'ohm' } },
+    { id: 'l1', type: 'led', x: 0, y: 0, rotation: 0, props: { color: 'red' } },
+  ];
+  const wires: Wire[] = [];
+
+  // 1. GND wire -> charcoal black
+  const gndPick = pickWireColor(parts, wires, { partId: 'u1', pinId: 'GND.1' }, { partId: 'l1', pinId: 'C' }, testManifests);
+  assert.equal(gndPick.color, WIRE_COLOR_GND);
+  wires.push({ id: 'w1', from: { partId: 'u1', pinId: 'GND.1' }, to: { partId: 'l1', pinId: 'C' }, color: gndPick.color });
+
+  // 2. 5V wire -> red
+  const pwrPick = pickWireColor(parts, wires, { partId: 'u1', pinId: '5V' }, { partId: 'bb1', pinId: 'tp1' }, testManifests);
+  assert.equal(pwrPick.color, WIRE_COLOR_POWER);
+  wires.push({ id: 'w2', from: { partId: 'u1', pinId: '5V' }, to: { partId: 'bb1', pinId: 'tp1' }, color: pwrPick.color });
+
+  // 3. First signal net (D13 -> bb1:a1) -> distinct color A
+  const sigA1 = pickWireColor(parts, wires, { partId: 'u1', pinId: '13' }, { partId: 'bb1', pinId: 'a1' }, testManifests);
+  assert.notEqual(sigA1.color, WIRE_COLOR_GND);
+  assert.notEqual(sigA1.color, WIRE_COLOR_POWER);
+  wires.push({ id: 'w3', from: { partId: 'u1', pinId: '13' }, to: { partId: 'bb1', pinId: 'a1' }, color: sigA1.color });
+
+  // 4. Same electrical net via breadboard strip (bb1:e1 -> r1:1) -> MUST match color A!
+  const sigA2 = pickWireColor(parts, wires, { partId: 'bb1', pinId: 'e1' }, { partId: 'r1', pinId: '1' }, testManifests);
+  assert.equal(sigA2.color, sigA1.color);
+  wires.push({ id: 'w4', from: { partId: 'bb1', pinId: 'e1' }, to: { partId: 'r1', pinId: '1' }, color: sigA2.color });
+
+  // 5. Different electrical net across resistor (r1:2 -> l1:A) -> MUST get a different color B!
+  const sigB = pickWireColor(parts, wires, { partId: 'r1', pinId: '2' }, { partId: 'l1', pinId: 'A' }, testManifests);
+  assert.notEqual(sigB.color, sigA1.color);
+  assert.notEqual(sigB.color, WIRE_COLOR_GND);
+  assert.notEqual(sigB.color, WIRE_COLOR_POWER);
+});
+
+test('autoTidyWires routes aligned pins dead-straight (0 bends) and avoids collinear overlap on parallel wires', () => {
+  const m = new Map<string, PartManifest>([
+    [
+      'resistor',
+      {
+        type: 'resistor',
+        category: 'passive',
+        width: 84,
+        height: 28,
+        name: { id: 'R', en: 'R' },
+        description: { id: '', en: '' },
+        defaultProps: {},
+        pins: [
+          { id: '1', label: '1', x: 6, y: 14, type: 'passive', exitDir: 'left' },
+          { id: '2', label: '2', x: 78, y: 14, type: 'passive', exitDir: 'right' },
+        ],
+      },
+    ],
+  ]);
+
+  // Two horizontally aligned resistors -> pin 2 of r1 faces pin 1 of r2 on exact same Y
+  const parts: PartInstance[] = [
+    { id: 'r1', type: 'resistor', x: 48, y: 120, rotation: 0, props: {} },
+    { id: 'r2', type: 'resistor', x: 180, y: 120, rotation: 0, props: {} },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'r1', pinId: '2' }, to: { partId: 'r2', pinId: '1' }, color: '#2563EB' },
+  ];
+  const tidied = autoTidyWires(parts, wires, m);
+  const full = routeWire({ x: 48 + 78, y: 120 + 14 }, { x: 180 + 6, y: 120 + 14 }, {
+    startExit: 'right',
+    endExit: 'left',
+    waypoints: tidied[0].waypoints,
+  });
+  assert.equal(full.length, 2, `Aligned facing pins should route straight (2 points), got ${full.length}`);
 });

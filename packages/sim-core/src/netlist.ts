@@ -1,4 +1,13 @@
-import { NetlistResult, PartInstance, PartManifest, Wire, isMcuBoardType, pinKey } from './types.js';
+import {
+  NetlistResult,
+  PartInstance,
+  PartManifest,
+  PinDef,
+  PinRef,
+  Wire,
+  isMcuBoardType,
+  pinKey,
+} from './types.js';
 
 class DisjointSet {
   private parent = new Map<string, string>();
@@ -161,4 +170,165 @@ export function buildNetlist(
   }
 
   return { pinToNet, netToPins };
+}
+
+export const WIRE_COLOR_GND = '#1F2937';
+export const WIRE_COLOR_POWER = '#DC2626';
+export const WIRE_COLOR_POWER_3V3 = '#EA580C';
+
+/** High-contrast jumper wire colors distinct across light and dark workbench surfaces. */
+export const SIGNAL_WIRE_PALETTE = [
+  '#2563EB', // blue
+  '#16A34A', // green
+  '#D97706', // amber
+  '#7C3AED', // violet
+  '#0891B2', // cyan
+  '#DB2777', // magenta
+  '#0F766E', // teal
+  '#CA8A04', // ochre
+  '#4F46E5', // indigo
+  '#65A30D', // lime
+] as const;
+
+type PowerRole = 'gnd' | 'power' | 'power3v3' | 'signal';
+
+function classifyPinPowerRole(pin: PinDef | undefined): PowerRole {
+  if (!pin) return 'signal';
+  const idUpper = pin.id.toUpperCase();
+  if (
+    pin.type === 'gnd' ||
+    idUpper === '-' ||
+    idUpper === 'IN-' ||
+    idUpper === 'OUT-' ||
+    idUpper.startsWith('GND')
+  ) {
+    return 'gnd';
+  }
+  if (idUpper === '3.3V') return 'power3v3';
+  if (
+    pin.type === 'power' ||
+    idUpper === '+' ||
+    idUpper === 'IN+' ||
+    idUpper === 'OUT+' ||
+    idUpper === '5V' ||
+    idUpper === '12V' ||
+    idUpper === 'VCC' ||
+    idUpper === 'VIN'
+  ) {
+    return 'power';
+  }
+  return 'signal';
+}
+
+function resolveNetPowerRole(
+  netId: string | undefined,
+  netlist: NetlistResult,
+  partById: Map<string, PartInstance>,
+  manifests: Map<string, PartManifest>,
+  fallbackRef?: PinRef
+): PowerRole {
+  const keys = netId ? (netlist.netToPins.get(netId) ?? []) : [];
+  const checkKeys = fallbackRef ? [...keys, pinKey(fallbackRef)] : keys;
+  let found: PowerRole = 'signal';
+  for (const k of checkKeys) {
+    const sep = k.indexOf(':');
+    if (sep <= 0) continue;
+    const part = partById.get(k.slice(0, sep));
+    const pinId = k.slice(sep + 1);
+    const pin = part ? manifests.get(part.type)?.pins.find((p) => p.id === pinId) : undefined;
+    const role = classifyPinPowerRole(pin);
+    if (role === 'gnd') return 'gnd';
+    if (role === 'power') found = 'power';
+    else if (role === 'power3v3' && found === 'signal') found = 'power3v3';
+  }
+  return found;
+}
+
+/**
+ * Picks a deterministic, visually distinct jumper color for a new wire:
+ * - Same electrical net (shared pin, branch, or breadboard strip) always reuses the same color.
+ * - Distinct signal nets each receive a different color from `SIGNAL_WIRE_PALETTE`.
+ * - Power rails keep conventional semantics (GND charcoal, VCC/5V/12V/+ red, 3.3V orange).
+ * Also returns `unifyWireIds` when the new wire bridges two previously separate nets.
+ */
+export function pickWireColor(
+  parts: PartInstance[],
+  wires: Wire[],
+  from: PinRef,
+  to: PinRef,
+  manifests: Map<string, PartManifest>
+): { color: string; unifyWireIds: string[] } {
+  const netlist = buildNetlist(parts, wires, manifests);
+  const partById = new Map(parts.map((p) => [p.id, p]));
+
+  const netFrom = netlist.pinToNet.get(pinKey(from));
+  const netTo = netlist.pinToNet.get(pinKey(to));
+
+  const wiresOnFrom = netFrom
+    ? wires.filter((w) => netlist.pinToNet.get(pinKey(w.from)) === netFrom)
+    : [];
+  const wiresOnTo =
+    netTo && netTo !== netFrom
+      ? wires.filter((w) => netlist.pinToNet.get(pinKey(w.from)) === netTo)
+      : [];
+
+  const roleFrom = resolveNetPowerRole(netFrom, netlist, partById, manifests, from);
+  const roleTo = resolveNetPowerRole(netTo, netlist, partById, manifests, to);
+  const combinedRole: PowerRole =
+    roleFrom === 'gnd' || roleTo === 'gnd'
+      ? 'gnd'
+      : roleFrom === 'power' || roleTo === 'power'
+        ? 'power'
+        : roleFrom === 'power3v3' || roleTo === 'power3v3'
+          ? 'power3v3'
+          : 'signal';
+
+  // If either side already belongs to a colored net, reuse that net's color and unify bridged nets
+  if (wiresOnFrom.length > 0 || wiresOnTo.length > 0) {
+    let chosen: string;
+    if (combinedRole === 'gnd') {
+      chosen = WIRE_COLOR_GND;
+    } else if (combinedRole === 'power') {
+      chosen = WIRE_COLOR_POWER;
+    } else if (combinedRole === 'power3v3') {
+      chosen = WIRE_COLOR_POWER_3V3;
+    } else if (wiresOnFrom.length > 0) {
+      chosen = wiresOnFrom[0].color;
+    } else {
+      chosen = wiresOnTo[0].color;
+    }
+    const unifyWireIds = [...wiresOnFrom, ...wiresOnTo]
+      .filter((w) => w.color.toUpperCase() !== chosen.toUpperCase())
+      .map((w) => w.id);
+    return { color: chosen, unifyWireIds };
+  }
+
+  if (combinedRole === 'gnd') return { color: WIRE_COLOR_GND, unifyWireIds: [] };
+  if (combinedRole === 'power') return { color: WIRE_COLOR_POWER, unifyWireIds: [] };
+  if (combinedRole === 'power3v3') return { color: WIRE_COLOR_POWER_3V3, unifyWireIds: [] };
+
+  // Count color usage per distinct existing signal net so every new net gets an unused color
+  const colorByNet = new Map<string, string>();
+  for (const w of wires) {
+    const nid = netlist.pinToNet.get(pinKey(w.from));
+    if (nid && !colorByNet.has(nid)) {
+      colorByNet.set(nid, w.color.toUpperCase());
+    }
+  }
+  const usage = new Map<string, number>();
+  for (const c of SIGNAL_WIRE_PALETTE) usage.set(c.toUpperCase(), 0);
+  for (const col of colorByNet.values()) {
+    if (usage.has(col)) usage.set(col, (usage.get(col) ?? 0) + 1);
+  }
+
+  let bestColor: string = SIGNAL_WIRE_PALETTE[0];
+  let bestCount = Infinity;
+  for (const c of SIGNAL_WIRE_PALETTE) {
+    const cnt = usage.get(c.toUpperCase()) ?? 0;
+    if (cnt < bestCount) {
+      bestCount = cnt;
+      bestColor = c;
+    }
+  }
+  return { color: bestColor, unifyWireIds: [] };
 }
