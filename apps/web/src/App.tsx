@@ -660,41 +660,21 @@ export const App: React.FC = () => {
     else if (isDesktopViewport()) setInspectorOpen(true);
   };
 
-  const handleAddPart = (type: string) => {
-    const manifest = PART_MANIFEST_MAP.get(type);
-    if (!manifest) return;
-
-    if (isMcuBoardType(type)) {
-      const existingMcu = diagram.parts.find((p) => isMcuBoardType(p.type));
-      if (existingMcu) {
-        if (existingMcu.type !== type) {
-          handleBoardSwitch(type);
-        }
-        setSelectedPartId(existingMcu.id);
-        setSelectedWireId(null);
-        if (isDesktopViewport()) setInspectorOpen(true);
-        return;
-      }
-      handleStop();
+  const insertPart = useCallback(
+    (nextPart: PartInstance, toastLabel: string) => {
       commitHistory(diagram.board, diagram.parts, diagram.wires);
-      const nextBoard: PartInstance = {
-        id: 'mcu1',
-        type,
-        x: 48,
-        y: 156,
-        rotation: 0,
-        props: structuredClone(manifest.defaultProps),
-      };
-      setOverrideHex(null);
-      setDiagram((d) => ({ ...d, board: type, parts: [nextBoard, ...d.parts] }));
-      setSelectedPartId(nextBoard.id);
+      setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
+      setSelectedPartId(nextPart.id);
       setSelectedWireId(null);
       if (isDesktopViewport()) setInspectorOpen(true);
-      setFitTrigger((n) => n + 1);
-      return;
-    }
+      showToast(toastLabel);
+    },
+    [commitHistory, diagram.board, diagram.parts, diagram.wires, showToast]
+  );
 
-    commitHistory(diagram.board, diagram.parts, diagram.wires);
+  const handleAddPart = (type: string) => {
+    const manifest = PART_MANIFEST_MAP.get(type);
+    if (!manifest || isMcuBoardType(type)) return;
     const offset = (diagram.parts.length % 5) * 24;
     const baseX =
       diagram.parts.length === 0 ? 168 : diagram.board === 'arduino-mega' ? 480 : 348;
@@ -706,11 +686,7 @@ export const App: React.FC = () => {
       rotation: 0,
       props: structuredClone(manifest.defaultProps),
     };
-    setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
-    setSelectedPartId(nextPart.id);
-    setSelectedWireId(null);
-    if (isDesktopViewport()) setInspectorOpen(true);
-    showToast(t.partAddedToast(manifest.name[lang]));
+    insertPart(nextPart, t.partAddedToast(manifest.name[lang]));
   };
 
   const findFreeCloneCoords = (partsList: PartInstance[], startX: number, startY: number): Point => {
@@ -750,23 +726,21 @@ export const App: React.FC = () => {
       if (!copiedPart) return;
       const manifest = PART_MANIFEST_MAP.get(copiedPart.type);
       if (!manifest) return;
-      commitHistory(diagram.board, diagram.parts, diagram.wires);
-      let pos: Point;
-      if (worldPos) {
-        pos = findFreeCloneCoords(
-          diagram.parts,
-          worldPos.x - manifest.width / 2,
-          worldPos.y - manifest.height / 2
-        );
-      } else {
-        pasteStepRef.current += 1;
-        const delta = pasteStepRef.current * 36;
-        pos = findFreeCloneCoords(
-          diagram.parts,
-          copiedPart.origin.x + delta,
-          copiedPart.origin.y + delta
-        );
-      }
+      const pos = worldPos
+        ? findFreeCloneCoords(
+            diagram.parts,
+            worldPos.x - manifest.width / 2,
+            worldPos.y - manifest.height / 2
+          )
+        : (() => {
+            pasteStepRef.current += 1;
+            const delta = pasteStepRef.current * 36;
+            return findFreeCloneCoords(
+              diagram.parts,
+              copiedPart.origin.x + delta,
+              copiedPart.origin.y + delta
+            );
+          })();
       const nextPart: PartInstance = {
         id: makeId(copiedPart.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
         type: copiedPart.type,
@@ -777,13 +751,9 @@ export const App: React.FC = () => {
         flipY: copiedPart.flipY,
         props: structuredClone(copiedPart.props),
       };
-      setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
-      setSelectedPartId(nextPart.id);
-      setSelectedWireId(null);
-      if (isDesktopViewport()) setInspectorOpen(true);
-      showToast(t.pastedToast(manifest.name[lang]));
+      insertPart(nextPart, t.pastedToast(manifest.name[lang]));
     },
-    [commitHistory, copiedPart, diagram.board, diagram.parts, diagram.wires, lang, showToast, t]
+    [copiedPart, diagram.parts, insertPart, lang, t]
   );
 
   const handleDuplicatePart = useCallback(
@@ -792,7 +762,6 @@ export const App: React.FC = () => {
       if (!target || isMcuBoardType(target.type)) return;
       const manifest = PART_MANIFEST_MAP.get(target.type);
       if (!manifest) return;
-      commitHistory(diagram.board, diagram.parts, diagram.wires);
       const pos = findFreeCloneCoords(diagram.parts, target.x + 36, target.y + 36);
       const nextPart: PartInstance = {
         id: makeId(target.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
@@ -804,13 +773,9 @@ export const App: React.FC = () => {
         flipY: target.flipY,
         props: structuredClone(target.props),
       };
-      setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
-      setSelectedPartId(nextPart.id);
-      setSelectedWireId(null);
-      if (isDesktopViewport()) setInspectorOpen(true);
-      showToast(t.duplicatedToast(manifest.name[lang]));
+      insertPart(nextPart, t.duplicatedToast(manifest.name[lang]));
     },
-    [commitHistory, diagram.board, diagram.parts, diagram.wires, lang, showToast, t]
+    [diagram.parts, insertPart, lang, t]
   );
 
   // Desktop keyboard shortcuts for Copy / Paste / Duplicate (safely ignored inside editors/inputs)
@@ -862,6 +827,13 @@ export const App: React.FC = () => {
     selectedPartId,
   ]);
 
+  const retidyPartWires = (nextParts: PartInstance[], wires: Wire[], partId: string): Wire[] => {
+    const preserve = new Set(
+      wires.filter((w) => w.from.partId !== partId && w.to.partId !== partId).map((w) => w.id)
+    );
+    return autoTidyWires(nextParts, wires, PART_MANIFEST_MAP, preserve);
+  };
+
   const handleMovePart = (
     partId: string,
     x: number,
@@ -878,21 +850,12 @@ export const App: React.FC = () => {
     setDiagram((d) => {
       const nextParts = d.parts.map((p) => (p.id === partId ? { ...p, x, y } : p));
       if (!commit) {
-        // Clear stale manual/cached waypoints on wires attached to the moving part so they stretch smoothly
         const nextWires = d.wires.map((w) =>
           w.from.partId === partId || w.to.partId === partId ? { ...w, waypoints: undefined } : w
         );
         return { ...d, parts: nextParts, wires: nextWires };
       }
-      // On drop, auto-route wires connected to the moved part cleanly around obstacles
-      const tidiedAll = autoTidyWires(nextParts, d.wires, PART_MANIFEST_MAP);
-      const nextWires = d.wires.map((w) => {
-        if (w.from.partId === partId || w.to.partId === partId) {
-          return tidiedAll.find((tw) => tw.id === w.id) ?? w;
-        }
-        return w;
-      });
-      return { ...d, parts: nextParts, wires: nextWires };
+      return { ...d, parts: nextParts, wires: retidyPartWires(nextParts, d.wires, partId) };
     });
   };
 
@@ -919,14 +882,14 @@ export const App: React.FC = () => {
       waypoints: waypoints.length > 0 ? waypoints : undefined,
     };
     const nextWires = [...existingSynced, wire];
-    // Auto-route cleanly around obstacles when user connects pin-to-pin without manual bends
     const finalWires =
       waypoints.length === 0
-        ? (() => {
-            const routed = autoTidyWires(diagram.parts, nextWires, PART_MANIFEST_MAP);
-            const routedNew = routed.find((w) => w.id === wire.id);
-            return [...existingSynced, routedNew ?? wire];
-          })()
+        ? autoTidyWires(
+            diagram.parts,
+            nextWires,
+            PART_MANIFEST_MAP,
+            new Set(existingSynced.map((w) => w.id))
+          )
         : nextWires;
     setDiagram((d) => ({ ...d, wires: finalWires }));
     setSelectedWireId(wire.id);
@@ -952,14 +915,7 @@ export const App: React.FC = () => {
           ? { ...p, rotation: (((p.rotation + 90) % 360) as PartInstance['rotation']) }
           : p
       );
-      const tidiedAll = autoTidyWires(nextParts, d.wires, PART_MANIFEST_MAP);
-      const nextWires = d.wires.map((w) => {
-        if (w.from.partId === partId || w.to.partId === partId) {
-          return tidiedAll.find((tw) => tw.id === w.id) ?? w;
-        }
-        return w;
-      });
-      return { ...d, parts: nextParts, wires: nextWires };
+      return { ...d, parts: nextParts, wires: retidyPartWires(nextParts, d.wires, partId) };
     });
   };
 
@@ -970,14 +926,7 @@ export const App: React.FC = () => {
         if (p.id !== partId) return p;
         return axis === 'x' ? { ...p, flipX: !p.flipX } : { ...p, flipY: !p.flipY };
       });
-      const tidiedAll = autoTidyWires(nextParts, d.wires, PART_MANIFEST_MAP);
-      const nextWires = d.wires.map((w) => {
-        if (w.from.partId === partId || w.to.partId === partId) {
-          return tidiedAll.find((tw) => tw.id === w.id) ?? w;
-        }
-        return w;
-      });
-      return { ...d, parts: nextParts, wires: nextWires };
+      return { ...d, parts: nextParts, wires: retidyPartWires(nextParts, d.wires, partId) };
     });
   };
 
@@ -1006,6 +955,7 @@ export const App: React.FC = () => {
   };
 
   const handleUpdateWireColor = (wireId: string, color: string) => {
+    commitHistory(diagram.board, diagram.parts, diagram.wires);
     setDiagram((d) => {
       const target = d.wires.find((w) => w.id === wireId);
       if (!target) return d;
@@ -1040,12 +990,8 @@ export const App: React.FC = () => {
   const handleResetWireShape = (wireId: string) => {
     commitHistory(diagram.board, diagram.parts, diagram.wires);
     setDiagram((d) => {
-      const tidied = autoTidyWires(d.parts, d.wires, PART_MANIFEST_MAP);
-      const resetWire = tidied.find((w) => w.id === wireId);
-      return {
-        ...d,
-        wires: d.wires.map((w) => (w.id === wireId && resetWire ? resetWire : w)),
-      };
+      const preserve = new Set(d.wires.filter((w) => w.id !== wireId).map((w) => w.id));
+      return { ...d, wires: autoTidyWires(d.parts, d.wires, PART_MANIFEST_MAP, preserve) };
     });
   };
 

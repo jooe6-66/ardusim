@@ -187,7 +187,6 @@ export interface PartManifest {
   width: number;
   height: number;
   name: { id: string; en: string };
-  description: { id: string; en: string };
   defaultProps: Record<string, unknown>;
   pins: PinDef[];
 }

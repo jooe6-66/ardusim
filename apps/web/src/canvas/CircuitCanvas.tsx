@@ -17,6 +17,7 @@ import {
   wirePointsToSvgPath,
 } from '@ardusim/sim-core';
 import { PART_MANIFEST_MAP } from '@ardusim/parts';
+import { ActionIcon } from '../components/ActionIcon';
 import { Lang, Messages } from '../i18n/messages';
 import { PartGraphics } from './PartGraphics';
 
@@ -229,7 +230,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   } | null>(null);
   const dragStateRef = useRef<
     | { kind: 'pan'; startClient: Point; startView: Point; moved: boolean }
-    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; moved: boolean; wasSelected: boolean; historySaved: boolean }
+    | { kind: 'part'; partId: string; startWorld: Point; origPart: Point; lastPos: Point; moved: boolean; wasSelected: boolean; historySaved: boolean }
     | { kind: 'wire-corner'; wireId: string; cornerIdx: number; origPts: Point[]; startClient: Point; moved: boolean; historySaved: boolean }
     | { kind: 'wire-segment'; wireId: string; segIdx: number; origPts: Point[]; startClient: Point; moved: boolean; historySaved: boolean }
     | { kind: 'button'; partId: string }
@@ -862,7 +863,26 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     [wireDraft, onAddWire, onSelectPart, onSelectWire]
   );
 
-  const startPartInteraction = (part: PartInstance, world: Point) => {
+  const scheduleTouchLongPress = (pointerId: number, clientX: number, clientY: number) => {
+    clearLongPress();
+    longPressStartRef.current = { pointerId, clientX, clientY };
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      longPressStartRef.current = null;
+      suppressNextUpRef.current = true;
+      longPressOpenedAtRef.current = Date.now();
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(12);
+        } catch {
+          // Ignore unsupported vibration
+        }
+      }
+      openContextMenuAt(clientX, clientY);
+    }, 460);
+  };
+
+  const startPartInteraction = (part: PartInstance, world: Point, touchEvent?: React.PointerEvent<SVGSVGElement>) => {
     const wasSelected = selectedPartId === part.id;
     onSelectPart(part.id);
     dragStateRef.current = {
@@ -870,10 +890,26 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       partId: part.id,
       startWorld: world,
       origPart: { x: part.x, y: part.y },
+      lastPos: { x: part.x, y: part.y },
       moved: false,
       wasSelected,
       historySaved: false,
     };
+    if (touchEvent && pointersRef.current.size === 1) {
+      scheduleTouchLongPress(touchEvent.pointerId, touchEvent.clientX, touchEvent.clientY);
+    }
+  };
+
+  const startPan = (e: React.PointerEvent<SVGSVGElement>, allowLongPress = false) => {
+    dragStateRef.current = {
+      kind: 'pan',
+      startClient: { x: e.clientX, y: e.clientY },
+      startView: { x: view.x, y: view.y },
+      moved: false,
+    };
+    if (allowLongPress && e.pointerType === 'touch' && pointersRef.current.size === 1) {
+      scheduleTouchLongPress(e.pointerId, e.clientX, e.clientY);
+    }
   };
 
   const triggerPinTapWithLoupe = (wp: WorldPin, st: Point, isTouch: boolean) => {
@@ -953,38 +989,12 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const hitPart = findPartAtWorld(world);
     const hitNonBbPart = hitPart && hitPart.type !== 'breadboard-half' ? hitPart : null;
     const hitWire = findWireAtStage(st, isTouch);
-
-    // Mobile / touch long-press opens floating context menu (Copy / Paste / Duplicate / Rotate / Delete)
+    const touchEvt = isTouch ? e : undefined;
     const isLiveTouchControl =
       running && (hitNonBbPart?.type === 'pushbutton' || hitNonBbPart?.type === 'keypad-4x4');
-    if (isTouch && pointersRef.current.size === 1 && !isLiveTouchControl) {
-      clearLongPress();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      longPressStartRef.current = { pointerId: e.pointerId, clientX: startX, clientY: startY };
-      longPressTimerRef.current = window.setTimeout(() => {
-        longPressTimerRef.current = null;
-        longPressStartRef.current = null;
-        suppressNextUpRef.current = true;
-        longPressOpenedAtRef.current = Date.now();
-        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-          try {
-            navigator.vibrate(12);
-          } catch {
-            // Ignore unsupported vibration
-          }
-        }
-        openContextMenuAt(startX, startY);
-      }, 460);
-    }
 
     // 1b. Drag handles on currently selected wire (reshape corners or slide/bend segments manually)
-    if (
-      selectedRoutedWire &&
-      mode !== 'delete' &&
-      mode !== 'wire' &&
-      !(running && (hitNonBbPart?.type === 'pushbutton' || hitNonBbPart?.type === 'keypad-4x4'))
-    ) {
+    if (selectedRoutedWire && mode !== 'delete' && mode !== 'wire' && !isLiveTouchControl) {
       const handle = findSelectedWireHandle(st, isTouch);
       if (handle) {
         const origPts = selectedRoutedWire.pts.map((p) => ({ x: p.x, y: p.y }));
@@ -1027,27 +1037,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         onDeleteWire(hitWire.wire.id);
         return;
       }
-      dragStateRef.current = {
-        kind: 'pan',
-        startClient: { x: e.clientX, y: e.clientY },
-        startView: { x: view.x, y: view.y },
-        moved: false,
-      };
+      startPan(e);
       return;
     }
 
     // 3. Dedicated Move mode: never steals taps for wires or pins
     if (mode === 'move') {
       if (hitPart) {
-        startPartInteraction(hitPart, world);
+        startPartInteraction(hitPart, world, touchEvt);
         return;
       }
-      dragStateRef.current = {
-        kind: 'pan',
-        startClient: { x: e.clientX, y: e.clientY },
-        startView: { x: view.x, y: view.y },
-        moved: false,
-      };
+      startPan(e, true);
       return;
     }
 
@@ -1062,12 +1062,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         triggerPinTapWithLoupe(nearPin.wp, st, isTouch);
         return;
       }
-      dragStateRef.current = {
-        kind: 'pan',
-        startClient: { x: e.clientX, y: e.clientY },
-        startView: { x: view.x, y: view.y },
-        moved: false,
-      };
+      startPan(e);
       return;
     }
 
@@ -1091,7 +1086,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         }
       }
       if (hitNonBbPart) {
-        startPartInteraction(hitNonBbPart, world);
+        startPartInteraction(hitNonBbPart, world, touchEvt);
         return;
       }
       if (hitWire) {
@@ -1099,15 +1094,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         return;
       }
       if (hitPart) {
-        startPartInteraction(hitPart, world);
+        startPartInteraction(hitPart, world, touchEvt);
         return;
       }
-      dragStateRef.current = {
-        kind: 'pan',
-        startClient: { x: e.clientX, y: e.clientY },
-        startView: { x: view.x, y: view.y },
-        moved: false,
-      };
+      startPan(e, true);
       return;
     }
 
@@ -1137,7 +1127,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     if (hitNonBbPart) {
-      startPartInteraction(hitNonBbPart, world);
+      startPartInteraction(hitNonBbPart, world, touchEvt);
       return;
     }
 
@@ -1147,16 +1137,11 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
 
     if (hitPart) {
-      startPartInteraction(hitPart, world);
+      startPartInteraction(hitPart, world, touchEvt);
       return;
     }
 
-    dragStateRef.current = {
-      kind: 'pan',
-      startClient: { x: e.clientX, y: e.clientY },
-      startView: { x: view.x, y: view.y },
-      moved: false,
-    };
+    startPan(e, true);
   };
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -1257,6 +1242,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       const dy = world.y - drag.startWorld.y;
       if (drag.moved || Math.hypot(dx, dy) > 4) {
         const aligned = computePartAlignmentSnap(drag.partId, drag.origPart.x + dx, drag.origPart.y + dy);
+        drag.lastPos = { x: aligned.x, y: aligned.y };
         onMovePart(
           drag.partId,
           aligned.x,
@@ -1354,8 +1340,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     }
     if (drag?.kind === 'part') {
       if (drag.moved) {
-        const p = parts.find((item) => item.id === drag.partId);
-        if (p) onMovePart(p.id, p.x, p.y, true, false);
+        onMovePart(drag.partId, drag.lastPos.x, drag.lastPos.y, true, false);
       } else if (drag.wasSelected) {
         onOpenInspector();
       }
@@ -1506,30 +1491,24 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
             aria-pressed={mode === 'delete'}
             title={t.modeDeleteHint}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M3 4.5H13M6 4.5V3H10V4.5M5 4.5L5.6 13H10.4L11 4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <ActionIcon name="trash" />
             <span>{t.modeDelete}</span>
           </button>
         </div>
 
         <div className="toolbar-group toolbar-actions">
           <button type="button" className="btn btn-compact btn-primary" onClick={onOpenPartPicker}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
+            <ActionIcon name="plus" size={14} />
             <span>{t.addPart}</span>
           </button>
           <button
             type="button"
             className="btn btn-compact"
             onClick={onTidyWires}
-            disabled={hasManualLayout ? wires.length === 0 : parts.length <= 1 && wires.length === 0}
+            disabled={!canTidyNow}
             title={hasManualLayout ? t.tidyWiresOnlyHint : t.tidyWiresHint}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <ActionIcon name="tidy" />
             <span>{t.tidyWires}</span>
           </button>
           <button type="button" className="btn btn-compact btn-icon" onClick={onUndo} disabled={!canUndo} aria-label={t.undo} title={t.undo}>
@@ -1853,10 +1832,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                         setContextMenu(null);
                       }}
                     >
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <rect x="5.5" y="5.5" width="8" height="8" rx="1.4" stroke="currentColor" strokeWidth="1.5" />
-                        <path d="M10.5 5.5V3.9C10.5 3.1 9.9 2.5 9.1 2.5H3.9C3.1 2.5 2.5 3.1 2.5 3.9V9.1C2.5 9.9 3.1 10.5 3.9 10.5H5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
+                      <ActionIcon name="copy" />
                       <span className="context-menu-label">{t.ctxCopy}</span>
                       <span className="context-menu-kbd">Ctrl+C</span>
                     </button>
@@ -1869,11 +1845,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                         setContextMenu(null);
                       }}
                     >
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <rect x="2.5" y="2.5" width="7.5" height="7.5" rx="1.4" stroke="currentColor" strokeWidth="1.5" />
-                        <rect x="6" y="6" width="7.5" height="7.5" rx="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.5" />
-                        <path d="M9.75 8.2V11.3M8.2 9.75H11.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
+                      <ActionIcon name="duplicate" />
                       <span className="context-menu-label">{t.ctxDuplicate}</span>
                       <span className="context-menu-kbd">Ctrl+D</span>
                     </button>
@@ -1890,11 +1862,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                       setContextMenu(null);
                     }}
                   >
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <rect x="3.5" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                      <path d="M6 4V3C6 2.45 6.45 2 7 2H9C9.55 2 10 2.45 10 3V4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      <path d="M6 8H10M6 10.5H8.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                    </svg>
+                    <ActionIcon name="paste" />
                     <span className="context-menu-label">{t.ctxPaste}</span>
                     <span className="context-menu-kbd">Ctrl+V</span>
                   </button>
@@ -1914,9 +1882,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                       setContextMenu(null);
                     }}
                   >
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M12.5 5.5A4.8 4.8 0 1 0 12.8 9.2M12.5 2.5V5.8H9.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    <ActionIcon name="rotate" />
                     <span className="context-menu-label">{t.rotate}</span>
                   </button>
                 )}
@@ -1930,9 +1896,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M8 2.5V13.5M5.5 5.5L2.5 8L5.5 10.5M10.5 5.5L13.5 8L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <ActionIcon name="flipH" />
                   <span className="context-menu-label">{t.flipH}</span>
                 </button>
 
@@ -1945,9 +1909,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2.5 8H13.5M5.5 5.5L8 2.5L10.5 5.5M5.5 10.5L8 13.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <ActionIcon name="flipV" />
                   <span className="context-menu-label">{t.flipV}</span>
                 </button>
 
@@ -1961,12 +1923,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M3 4.5H13M3 8H13M3 11.5H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <circle cx="6" cy="4.5" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
-                    <circle cx="10.5" cy="8" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
-                    <circle cx="7" cy="11.5" r="1.4" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
-                  </svg>
+                  <ActionIcon name="sliders" />
                   <span className="context-menu-label">{t.inspector}</span>
                 </button>
 
@@ -1982,9 +1939,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                         setContextMenu(null);
                       }}
                     >
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <path d="M3 4.5H13M6 4.5V3H10V4.5M5 4.5L5.6 13H10.4L11 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                      <ActionIcon name="trash" />
                       <span className="context-menu-label">{t.deleteSelected}</span>
                     </button>
                   </>
@@ -2002,11 +1957,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <rect x="3.5" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M6 4V3C6 2.45 6.45 2 7 2H9C9.55 2 10 2.45 10 3V4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M6 8H10M6 10.5H8.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                  </svg>
+                  <ActionIcon name="paste" />
                   <span className="context-menu-label">{t.ctxPasteHere}</span>
                   <span className="context-menu-kbd">Ctrl+V</span>
                 </button>
@@ -2020,9 +1971,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     onOpenPartPicker();
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                  </svg>
+                  <ActionIcon name="plus" />
                   <span className="context-menu-label">{t.partPickerTitle}</span>
                 </button>
                 <button
@@ -2035,9 +1984,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <ActionIcon name="tidy" />
                   <span className="context-menu-label">{t.tidyWires}</span>
                 </button>
                 <button
@@ -2049,9 +1996,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     setContextMenu(null);
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2.5 6V3.5C2.5 2.95 2.95 2.5 3.5 2.5H6M10 2.5H12.5C13.05 2.5 13.5 2.95 13.5 3.5V6M13.5 10V12.5C13.5 13.05 13.05 13.5 12.5 13.5H10M6 13.5H3.5C2.95 13.5 2.5 13.05 2.5 12.5V10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
+                  <ActionIcon name="fit" />
                   <span className="context-menu-label">{t.zoomFit}</span>
                 </button>
               </>
@@ -2075,9 +2020,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                   aria-label={t.flipH}
                   title={t.flipH}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M8 2.5V13.5M5.5 5.5L2.5 8L5.5 10.5M10.5 5.5L13.5 8L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <ActionIcon name="flipH" />
                 </button>
                 <button
                   type="button"
@@ -2086,9 +2029,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                   aria-label={t.flipV}
                   title={t.flipV}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2.5 8H13.5M5.5 5.5L8 2.5L10.5 5.5M5.5 10.5L8 13.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
+                  <ActionIcon name="flipV" />
                 </button>
               </>
             )}
@@ -2100,9 +2041,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 aria-label={t.rotate}
                 title={t.rotate}
               >
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M12.5 5.5A4.8 4.8 0 1 0 12.8 9.2M12.5 2.5V5.8H9.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <ActionIcon name="rotate" />
               </button>
             )}
             {canDeleteSelected && (

@@ -216,10 +216,6 @@ export const MCU_BOARD_MANIFESTS: PartManifest[] = [
     width: 276,
     height: 196,
     name: { id: 'Arduino Uno', en: 'Arduino Uno' },
-    description: {
-      id: 'ATmega328P (14 pin digital, 6 analog, I2C A4/A5)',
-      en: 'ATmega328P (14 digital pins, 6 analog inputs, I2C A4/A5)',
-    },
     defaultProps: {},
     pins: buildUnoPins(),
   },
@@ -229,10 +225,6 @@ export const MCU_BOARD_MANIFESTS: PartManifest[] = [
     width: 228,
     height: 96,
     name: { id: 'Arduino Nano', en: 'Arduino Nano' },
-    description: {
-      id: 'ATmega328P ringkas (14 digital, 8 analog A0-A7, ramah breadboard)',
-      en: 'Compact ATmega328P (14 digital, 8 analog A0-A7, breadboard form)',
-    },
     defaultProps: {},
     pins: buildNanoPins(),
   },
@@ -242,10 +234,6 @@ export const MCU_BOARD_MANIFESTS: PartManifest[] = [
     width: 432,
     height: 216,
     name: { id: 'Arduino Mega 2560', en: 'Arduino Mega 2560' },
-    description: {
-      id: 'ATmega2560 (54 digital, 16 analog, 4 UART, I2C D20/D21)',
-      en: 'ATmega2560 (54 digital, 16 analog, 4 UARTs, I2C D20/D21)',
-    },
     defaultProps: {},
     pins: buildMegaPins(),
   },

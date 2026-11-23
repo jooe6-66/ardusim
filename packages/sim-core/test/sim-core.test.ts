@@ -28,7 +28,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 276,
       height: 196,
       name: { id: 'Arduino Uno', en: 'Arduino Uno' },
-      description: { id: '', en: '' },
       defaultProps: {},
       pins: [
         { id: '5V', label: '5V', x: 100, y: 180, type: 'power', fixedVoltage: 5.0 },
@@ -47,7 +46,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 396,
       height: 214,
       name: { id: 'BB', en: 'BB' },
-      description: { id: '', en: '' },
       defaultProps: {},
       pins: [
         { id: 'a1', label: 'a1', x: 24, y: 50, type: 'breadboard' },
@@ -66,7 +64,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 84,
       height: 28,
       name: { id: 'R', en: 'R' },
-      description: { id: '', en: '' },
       defaultProps: { value: 220, unit: 'ohm' },
       pins: [
         { id: '1', label: '1', x: 6, y: 14, type: 'passive' },
@@ -82,7 +79,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 44,
       height: 58,
       name: { id: 'LED', en: 'LED' },
-      description: { id: '', en: '' },
       defaultProps: { color: 'red' },
       pins: [
         { id: 'A', label: 'A', x: 16, y: 54, type: 'passive' },
@@ -98,7 +94,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 84,
       height: 28,
       name: { id: 'D', en: 'D' },
-      description: { id: '', en: '' },
       defaultProps: { model: '1N4007', vf: 0.7 },
       pins: [
         { id: 'A', label: 'A', x: 6, y: 14, type: 'passive' },
@@ -114,7 +109,6 @@ const testManifests = new Map<string, PartManifest>([
       width: 60,
       height: 52,
       name: { id: 'C', en: 'C' },
-      description: { id: '', en: '' },
       defaultProps: { value: 100, unit: 'uf', kind: 'electrolytic' },
       pins: [
         { id: '1', label: '+', x: 18, y: 48, type: 'passive' },
@@ -459,7 +453,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 116,
     height: 64,
     name: { id: '18650', en: '18650' },
-    description: { id: '', en: '' },
     defaultProps: { cells: 1, voltage: 3.7 },
     pins: [
       { id: '+', label: '+', x: 110, y: 20, type: 'power' },
@@ -472,7 +465,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 124,
     height: 68,
     name: { id: 'LiPo 3S', en: 'LiPo 3S' },
-    description: { id: '', en: '' },
     defaultProps: { voltage: 11.1 },
     pins: [
       { id: '+', label: '+', x: 118, y: 22, type: 'power' },
@@ -485,7 +477,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 124,
     height: 68,
     name: { id: 'Buck', en: 'Buck' },
-    description: { id: '', en: '' },
     defaultProps: { targetVoltage: 5.0 },
     pins: [
       { id: 'IN+', label: 'IN+', x: 6, y: 22, type: 'power' },
@@ -500,7 +491,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 116,
     height: 64,
     name: { id: 'Boost', en: 'Boost' },
-    description: { id: '', en: '' },
     defaultProps: { targetVoltage: 12.0 },
     pins: [
       { id: 'IN+', label: 'IN+', x: 6, y: 20, type: 'power' },
@@ -515,7 +505,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 132,
     height: 124,
     name: { id: 'L298N', en: 'L298N' },
-    description: { id: '', en: '' },
     defaultProps: { reg5vEnabled: true },
     pins: [
       { id: 'OUT1', label: 'OUT1', x: 6, y: 36, type: 'passive' },
@@ -539,7 +528,6 @@ test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and
     width: 84,
     height: 76,
     name: { id: 'DC Motor', en: 'DC Motor' },
-    description: { id: '', en: '' },
     defaultProps: {},
     pins: [
       { id: '+', label: '+', x: 30, y: 72, type: 'passive' },
@@ -650,7 +638,6 @@ test('autoTidyWires routes aligned pins dead-straight (0 bends) and avoids colli
         width: 84,
         height: 28,
         name: { id: 'R', en: 'R' },
-        description: { id: '', en: '' },
         defaultProps: {},
         pins: [
           { id: '1', label: '1', x: 6, y: 14, type: 'passive', exitDir: 'left' },
@@ -675,4 +662,84 @@ test('autoTidyWires routes aligned pins dead-straight (0 bends) and avoids colli
     waypoints: tidied[0].waypoints,
   });
   assert.equal(full.length, 2, `Aligned facing pins should route straight (2 points), got ${full.length}`);
+
+  // Preserved wire keeps its custom manual bend while a second wire routes cleanly
+  const manualWp = [{ x: 132, y: 60 }, { x: 180, y: 60 }];
+  const withSecond = autoTidyWires(
+    parts,
+    [
+      { id: 'w1', from: { partId: 'r1', pinId: '2' }, to: { partId: 'r2', pinId: '1' }, color: '#2563EB', waypoints: manualWp },
+      { id: 'w2', from: { partId: 'r1', pinId: '1' }, to: { partId: 'r2', pinId: '2' }, color: '#16A34A' },
+    ],
+    m,
+    new Set(['w1'])
+  );
+  assert.deepEqual(withSecond[0].waypoints, manualWp);
+  assert.ok((withSecond[1].waypoints?.length ?? 0) > 0);
+});
+
+test('pickWireColor keeps signal colors for passive/digital +/- pins and unwired active-low relay stays off', () => {
+  const m = new Map<string, PartManifest>(testManifests);
+  m.set('dc-motor', {
+    type: 'dc-motor',
+    category: 'motor',
+    width: 84,
+    height: 76,
+    name: { id: 'Motor', en: 'Motor' },
+    defaultProps: {},
+    pins: [
+      { id: '+', label: '+', x: 30, y: 72, type: 'passive' },
+      { id: '-', label: '-', x: 54, y: 72, type: 'passive' },
+    ],
+  });
+  m.set('relay', {
+    type: 'relay',
+    category: 'output',
+    width: 92,
+    height: 72,
+    name: { id: 'Relay', en: 'Relay' },
+    defaultProps: { activeLow: true },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 6, y: 20, type: 'power' },
+      { id: 'GND', label: 'GND', x: 6, y: 36, type: 'gnd' },
+      { id: 'IN', label: 'IN', x: 6, y: 52, type: 'digital' },
+      { id: 'NO', label: 'NO', x: 86, y: 20, type: 'passive' },
+      { id: 'COM', label: 'COM', x: 86, y: 36, type: 'passive' },
+      { id: 'NC', label: 'NC', x: 86, y: 52, type: 'passive' },
+    ],
+  });
+
+  const parts: PartInstance[] = [
+    { id: 'u1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'm1', type: 'dc-motor', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'rel1', type: 'relay', x: 0, y: 0, rotation: 0, props: { activeLow: true } },
+  ];
+
+  // DC motor passive '+' and '-' wired to digital pins must NOT be forced to power red or GND charcoal
+  const mp = pickWireColor(parts, [], { partId: 'u1', pinId: '13' }, { partId: 'm1', pinId: '+' }, m);
+  assert.notEqual(mp.color, WIRE_COLOR_POWER);
+  assert.notEqual(mp.color, WIRE_COLOR_GND);
+  const mn = pickWireColor(parts, [{ id: 'w1', from: { partId: 'u1', pinId: '13' }, to: { partId: 'm1', pinId: '+' }, color: mp.color }], { partId: 'u1', pinId: '12' }, { partId: 'm1', pinId: '-' }, m);
+  assert.notEqual(mn.color, WIRE_COLOR_GND);
+  assert.notEqual(mn.color, mp.color);
+
+  // Active-low relay with VCC+GND powered but IN unwired must remain OFF (not falsely energized)
+  const solver = new PassiveCircuitSolver();
+  const relayWires: Wire[] = [
+    { id: 'r1', from: { partId: 'u1', pinId: '5V' }, to: { partId: 'rel1', pinId: 'VCC' }, color: '#DC2626' },
+    { id: 'r2', from: { partId: 'u1', pinId: 'GND.1' }, to: { partId: 'rel1', pinId: 'GND' }, color: '#1F2937' },
+  ];
+  const unwiredOut = solver.solve(parts, m, buildNetlist(parts, relayWires, m), [], 0.01);
+  assert.equal(unwiredOut.relayEnergized.rel1, false);
+
+  // Wiring IN to LOW (0V) energizes active-low relay
+  const wiredRelay = [...relayWires, { id: 'r3', from: { partId: 'u1', pinId: '13' }, to: { partId: 'rel1', pinId: 'IN' }, color: '#2563EB' }];
+  const lowOut = solver.solve(
+    parts,
+    m,
+    buildNetlist(parts, wiredRelay, m),
+    [{ pinKey: 'u1:13', mode: 'OUTPUT_LOW', outputVoltage: 0 }],
+    0.01
+  );
+  assert.equal(lowOut.relayEnergized.rel1, true);
 });

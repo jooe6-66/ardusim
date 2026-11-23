@@ -112,8 +112,12 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
                 type="button"
                 className="btn btn-primary"
                 onClick={async () => {
-                  await onSaveCurrent();
-                  setNotice(t.savedNotice);
+                  try {
+                    await onSaveCurrent();
+                    setNotice(t.savedNotice);
+                  } catch {
+                    setNotice(t.invalidFileError);
+                  }
                 }}
               >
                 {t.saveCurrent}

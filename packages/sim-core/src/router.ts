@@ -233,11 +233,7 @@ function computeExitStubPoint(
   partType: string
 ): Point {
   if (!exitDir) return world;
-  const clearance = isMcuBoardType(partType)
-    ? 24
-    : partType === 'breadboard-half'
-      ? 18
-      : 18;
+  const clearance = isMcuBoardType(partType) ? 24 : 18;
   let distToEdge = 0;
   switch (exitDir) {
     case 'up':
@@ -396,7 +392,8 @@ class MinHeap<T> {
 export function autoTidyWires(
   parts: PartInstance[],
   wires: Wire[],
-  manifests: Map<string, PartManifest>
+  manifests: Map<string, PartManifest>,
+  preserveWireIds?: Set<string>
 ): Wire[] {
   if (wires.length === 0) return wires;
 
@@ -776,15 +773,10 @@ export function autoTidyWires(
         const p2 = cur[i + 1];
         const p3 = cur[i + 2];
         // Try collapsing interior segment p1->p2 onto p0 or p3 axis
-        const horizMid = Math.abs(p1.y - p2.y) < 0.5;
-        const trials: Point[][] = [];
-        if (horizMid) {
-          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p3.x, y: p0.y }, ...cur.slice(i + 2)]));
-          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p0.x, y: p3.y }, ...cur.slice(i + 2)]));
-        } else {
-          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p0.x, y: p3.y }, ...cur.slice(i + 2)]));
-          trials.push(simplifyOrthogonal([...cur.slice(0, i), { x: p3.x, y: p0.y }, ...cur.slice(i + 2)]));
-        }
+        const trials = [
+          simplifyOrthogonal([...cur.slice(0, i), { x: p3.x, y: p0.y }, ...cur.slice(i + 2)]),
+          simplifyOrthogonal([...cur.slice(0, i), { x: p0.x, y: p3.y }, ...cur.slice(i + 2)]),
+        ];
         for (const cand of trials) {
           if (cand.length >= cur.length) continue;
           if (!respectsPinExits(cand, fromInfo.exitDir, toInfo.exitDir)) continue;
@@ -828,6 +820,34 @@ export function autoTidyWires(
   };
 
   const routedWaypoints = new Map<string, Point[]>();
+  const storeRoutedPath = (wireId: string, pts: Point[], fromWorld: Point, toWorld: Point) => {
+    const inner = pts.slice(1, -1);
+    // Keep midpoint on 2-point straight lines so routeWire does not re-add default stubs
+    routedWaypoints.set(
+      wireId,
+      inner.length > 0
+        ? inner
+        : [{ x: (fromWorld.x + toWorld.x) / 2, y: (fromWorld.y + toWorld.y) / 2 }]
+    );
+  };
+
+  // Pre-register preserved wires (e.g. untouched manual bends) so newly routed wires avoid them
+  if (preserveWireIds && preserveWireIds.size > 0) {
+    wires.forEach((w, idx) => {
+      if (!preserveWireIds.has(w.id)) return;
+      const fromInfo = pinPos.get(pinKey(w.from));
+      const toInfo = pinPos.get(pinKey(w.to));
+      if (!fromInfo || !toInfo) return;
+      const netId = netlist.pinToNet.get(pinKey(w.from)) ?? w.id;
+      const pts = routeWire(fromInfo.world, toInfo.world, {
+        startExit: fromInfo.exitDir,
+        endExit: toInfo.exitDir,
+        waypoints: w.waypoints,
+        laneIndex: idx,
+      });
+      registerFinalPath(pts, netId);
+    });
+  }
 
   const dirs = [
     { dx: 1, dy: 0, horiz: true },
@@ -837,6 +857,7 @@ export function autoTidyWires(
   ];
 
   for (const { wire } of indexedWires) {
+    if (preserveWireIds?.has(wire.id)) continue;
     const fromInfo = pinPos.get(pinKey(wire.from));
     const toInfo = pinPos.get(pinKey(wire.to));
     if (!fromInfo || !toInfo) continue;
@@ -849,15 +870,7 @@ export function autoTidyWires(
     const fast = tryCleanFastRoute(fromInfo, toInfo, startPt, endPt, netId);
     if (fast) {
       registerFinalPath(fast, netId);
-      const inner = fast.slice(1, -1);
-      // For dead-straight 2-point wires, keep midpoint waypoint so routeWire preserves straightness without re-adding stubs
-      if (inner.length === 0) {
-        routedWaypoints.set(wire.id, [
-          { x: (fromInfo.world.x + toInfo.world.x) / 2, y: (fromInfo.world.y + toInfo.world.y) / 2 },
-        ]);
-      } else {
-        routedWaypoints.set(wire.id, inner);
-      }
+      storeRoutedPath(wire.id, fast, fromInfo.world, toInfo.world);
       continue;
     }
 
@@ -946,7 +959,10 @@ export function autoTidyWires(
       }
     }
 
-    if (foundState < 0) continue;
+    if (foundState < 0) {
+      routedWaypoints.set(wire.id, []);
+      continue;
+    }
 
     const gridPath: Array<{ gx: number; gy: number }> = [];
     let s = foundState;
@@ -975,15 +991,7 @@ export function autoTidyWires(
     );
     const polished = polishOrthogonalPath(stitched, fromInfo, toInfo, netId);
     registerFinalPath(polished, netId);
-
-    const inner = polished.slice(1, -1);
-    if (inner.length === 0) {
-      routedWaypoints.set(wire.id, [
-        { x: (fromInfo.world.x + toInfo.world.x) / 2, y: (fromInfo.world.y + toInfo.world.y) / 2 },
-      ]);
-    } else {
-      routedWaypoints.set(wire.id, inner);
-    }
+    storeRoutedPath(wire.id, polished, fromInfo.world, toInfo.world);
   }
 
   return wires.map((w) => {

@@ -229,7 +229,14 @@ export class PassiveCircuitSolver {
     const diodes: DiodeBranch[] = [];
     const capacitors: CapacitorBranch[] = [];
     const motors: Array<{ partId: string; pos: number; neg: number }> = [];
-    const relays: Array<{ partId: string; vcc: number; gnd: number; inp: number; activeLow: boolean }> = [];
+    const relays: Array<{
+      partId: string;
+      vcc: number;
+      gnd: number;
+      inp: number;
+      inWired: boolean;
+      activeLow: boolean;
+    }> = [];
 
     // 1. Board fixed voltage rails (5V, 3.3V, GND)
     for (const part of parts) {
@@ -412,12 +419,15 @@ export class PassiveCircuitSolver {
       } else if (part.type === 'relay') {
         const vcc = touchNet(netlist.pinToNet.get(`${part.id}:VCC`));
         const gnd = touchNet(netlist.pinToNet.get(`${part.id}:GND`));
-        const inp = touchNet(netlist.pinToNet.get(`${part.id}:IN`));
+        const inNet = netlist.pinToNet.get(`${part.id}:IN`);
+        const inp = touchNet(inNet);
+        const inWired = inNet !== undefined && (netlist.netToPins.get(inNet)?.length ?? 0) > 1;
         relays.push({
           partId: part.id,
           vcc,
           gnd,
           inp,
+          inWired,
           activeLow: Boolean(part.props.activeLow),
         });
       } else if (part.type === 'battery-18650' || part.type === 'battery-lipo-3s') {
@@ -783,10 +793,11 @@ export class PassiveCircuitSolver {
     }
 
     for (const r of relays) {
-      const vSupply = (r.vcc >= 0 ? nodeV[r.vcc] : 0) - (r.gnd >= 0 ? nodeV[r.gnd] : 0);
-      const vIn = r.inp >= 0 ? nodeV[r.inp] : 0;
-      const powered = vSupply >= 3.0 || (r.vcc < 0 && r.gnd < 0);
-      relayEnergized[r.partId] = powered && (r.activeLow ? vIn < 1.5 : vIn > 2.5);
+      const vGnd = r.gnd >= 0 ? nodeV[r.gnd] : 0;
+      const vSupply = (r.vcc >= 0 ? nodeV[r.vcc] : 0) - vGnd;
+      const vIn = r.inp >= 0 ? nodeV[r.inp] - vGnd : 0;
+      const powered = vSupply >= 3.0;
+      relayEnergized[r.partId] = powered && r.inWired && (r.activeLow ? vIn < 1.5 : vIn > 2.5);
     }
 
     return {

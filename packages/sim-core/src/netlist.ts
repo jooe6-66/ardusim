@@ -197,7 +197,6 @@ function classifyPinPowerRole(pin: PinDef | undefined): PowerRole {
   const idUpper = pin.id.toUpperCase();
   if (
     pin.type === 'gnd' ||
-    idUpper === '-' ||
     idUpper === 'IN-' ||
     idUpper === 'OUT-' ||
     idUpper.startsWith('GND')
@@ -207,7 +206,6 @@ function classifyPinPowerRole(pin: PinDef | undefined): PowerRole {
   if (idUpper === '3.3V') return 'power3v3';
   if (
     pin.type === 'power' ||
-    idUpper === '+' ||
     idUpper === 'IN+' ||
     idUpper === 'OUT+' ||
     idUpper === '5V' ||

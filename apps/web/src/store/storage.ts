@@ -73,8 +73,11 @@ export function saveWorkspaceDraft(
   }
 }
 
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
       reject(new Error('IndexedDB unavailable'));
       return;
@@ -89,9 +92,22 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_HEX_CACHE, { keyPath: 'hash' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
+  }).catch((err) => {
+    dbPromise = null;
+    throw err;
   });
+  return dbPromise;
 }
 
 export async function hashSketch(board: BoardId, sketch: string): Promise<string> {

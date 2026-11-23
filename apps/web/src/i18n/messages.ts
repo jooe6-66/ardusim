@@ -17,7 +17,6 @@ export interface Messages {
   canvasEmptyTitle: string;
   canvasEmptyDesc: string;
   openFileMenu: string;
-  catMcu: string;
   addPart: string;
   inspector: string;
   tabCircuit: string;
@@ -219,7 +218,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     canvasEmptyTitle: 'Kanvas Kosong',
     canvasEmptyDesc: 'Pilih board Arduino di pojok kiri atas, lalu tambahkan komponen untuk mulai merangkai atau buka contoh lewat menu File.',
     openFileMenu: 'Buka Menu File',
-    catMcu: 'Board Arduino',
     addPart: 'Komponen',
     inspector: 'Properti',
     tabCircuit: 'Rangkaian',
@@ -419,7 +417,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     canvasEmptyTitle: 'Empty Workbench',
     canvasEmptyDesc: 'Choose an Arduino board in the top-left menu, then add components to start wiring or open a template from File.',
     openFileMenu: 'Open File Menu',
-    catMcu: 'Arduino Boards',
     addPart: 'Parts',
     inspector: 'Inspector',
     tabCircuit: 'Circuit',

@@ -6,7 +6,11 @@ import {
   LedColor,
   PartInstance,
   ResistanceUnit,
+  SIGNAL_WIRE_PALETTE,
   SimSnapshot,
+  WIRE_COLOR_GND,
+  WIRE_COLOR_POWER,
+  WIRE_COLOR_POWER_3V3,
   Wire,
   isMcuBoardType,
   ldrLuxToOhms,
@@ -17,19 +21,14 @@ import {
   PART_MANIFEST_MAP,
   RESISTANCE_UNITS,
 } from '@ardusim/parts';
+import { ActionIcon } from '../components/ActionIcon';
 import { Lang, Messages } from '../i18n/messages';
 
 const WIRE_COLORS = [
-  '#DC2626',
-  '#1F2937',
-  '#2563EB',
-  '#16A34A',
-  '#D97706',
-  '#7C3AED',
-  '#0891B2',
-  '#DB2777',
-  '#0F766E',
-  '#EA580C',
+  WIRE_COLOR_POWER,
+  WIRE_COLOR_GND,
+  WIRE_COLOR_POWER_3V3,
+  ...SIGNAL_WIRE_PALETTE,
 ];
 
 const LED_COLORS: Array<{ id: LedColor; hex: string; label: string }> = [
@@ -109,6 +108,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
   t,
 }) => {
   const [btInput, setBtInput] = useState('');
+  const [failedPreviews, setFailedPreviews] = useState<Record<string, boolean>>({});
   if (!selectedPart && !selectedWire) {
     return (
       <>
@@ -218,16 +218,16 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
       </div>
 
       <div className="inspector-body">
-        {!isMcuBoardType(part.type) && (
-          <div className="inspector-part-preview">
+        {!isMcuBoardType(part.type) && !failedPreviews[part.type] && (
+          <div key={part.type} className="inspector-part-preview">
             <img
               src={`/parts/${part.type}.webp`}
               alt={title}
               className="inspector-part-img"
               loading="lazy"
-              onError={(e) => {
-                (e.currentTarget.parentElement as HTMLElement).style.display = 'none';
-              }}
+              onError={() =>
+                setFailedPreviews((prev) => ({ ...prev, [part.type]: true }))
+              }
             />
           </div>
         )}
@@ -1192,9 +1192,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             onClick={() => onFlipPart(part.id, 'x')}
             aria-pressed={Boolean(part.flipX)}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M8 2.5V13.5M5.5 5.5L2.5 8L5.5 10.5M10.5 5.5L13.5 8L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <ActionIcon name="flipH" />
             <span>{t.flipH}</span>
           </button>
           <button
@@ -1204,9 +1202,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             onClick={() => onFlipPart(part.id, 'y')}
             aria-pressed={Boolean(part.flipY)}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M2.5 8H13.5M5.5 5.5L8 2.5L10.5 5.5M5.5 10.5L8 13.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <ActionIcon name="flipV" />
             <span>{t.flipV}</span>
           </button>
         </div>
@@ -1215,15 +1211,11 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
         {!isMcuBoardType(part.type) && (
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onRotatePart(part.id)}>
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M12.5 5.5A4.8 4.8 0 1 0 12.8 9.2M12.5 2.5V5.8H9.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <ActionIcon name="rotate" />
               <span>{t.rotate}</span>
             </button>
             <button type="button" className="btn btn-danger" style={{ flex: 1 }} onClick={() => onDeletePart(part.id)}>
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M3 4.5H13M6 4.5V3H10V4.5M5 4.5L5.6 13H10.4L11 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <ActionIcon name="trash" />
               <span>{t.deleteSelected}</span>
             </button>
           </div>

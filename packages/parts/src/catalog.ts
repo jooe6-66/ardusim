@@ -35,10 +35,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 396,
     height: 214,
     name: { id: 'Breadboard (Half)', en: 'Breadboard (Half)' },
-    description: {
-      id: 'Papan proyek 30 kolom dengan rel daya atas dan bawah',
-      en: '30-column solderless breadboard with top and bottom power rails',
-    },
     defaultProps: {},
     pins: buildBreadboardPins(),
   },
@@ -49,10 +45,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 84,
     height: 28,
     name: { id: 'Resistor', en: 'Resistor' },
-    description: {
-      id: 'Hambatan kustom (Ω, kΩ, MΩ) dengan kode warna 4 pita otomatis',
-      en: 'Custom resistance (Ω, kΩ, MΩ) with automatic 4-band color code',
-    },
     defaultProps: { value: 220, unit: 'ohm' },
     pins: [
       { id: '1', label: 'Pin 1', x: 6, y: 14, type: 'passive', exitDir: 'left' },
@@ -65,10 +57,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 60,
     height: 52,
     name: { id: 'Kapasitor', en: 'Capacitor' },
-    description: {
-      id: 'Kapasitansi kustom (pF, nF, µF, mF) tipe keramik atau elektrolit',
-      en: 'Custom capacitance (pF, nF, µF, mF), ceramic or electrolytic',
-    },
     defaultProps: { value: 100, unit: 'uf', kind: 'electrolytic' },
     pins: [
       { id: '1', label: '+', x: 18, y: 48, type: 'passive', exitDir: 'down' },
@@ -81,10 +69,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 84,
     height: 28,
     name: { id: 'Dioda', en: 'Diode' },
-    description: {
-      id: 'Penyearah searah: 1N4007, Schottky 1N5819, Zener, atau Vf kustom',
-      en: 'Unidirectional diode: 1N4007, 1N5819 Schottky, Zener, or custom Vf',
-    },
     defaultProps: { model: '1N4007', vf: 0.7, zenerVz: 3.3 },
     pins: [
       { id: 'A', label: 'Anoda (+)', x: 6, y: 14, type: 'passive', exitDir: 'left' },
@@ -98,10 +82,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 56,
     height: 56,
     name: { id: 'Tombol Tekan', en: 'Pushbutton' },
-    description: {
-      id: 'Sakelar taktil 4 kaki (tekan sesaat atau kunci tahan untuk layar sentuh)',
-      en: '4-pin tactile switch (momentary press or latch hold for touchscreens)',
-    },
     defaultProps: { color: 'teal', locked: false },
     pins: [
       { id: '1a', label: '1a', x: 10, y: 10, type: 'passive', exitDir: 'up' },
@@ -116,10 +96,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 64,
     height: 68,
     name: { id: 'Potensiometer', en: 'Potentiometer' },
-    description: {
-      id: 'Pembagi tegangan putar untuk input analog (nilai kustom)',
-      en: 'Rotary voltage divider for analog input (custom resistance)',
-    },
     defaultProps: { value: 10, unit: 'kohm', position: 0.5 },
     pins: [
       { id: 'GND', label: 'GND', x: 20, y: 64, type: 'gnd', exitDir: 'down' },
@@ -133,10 +109,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 116,
     height: 132,
     name: { id: 'Keypad 4x4', en: '4x4 Matrix Keypad' },
-    description: {
-      id: 'Matriks 16 tombol (1-9, 0, A-D, *, #) dengan 4 baris dan 4 kolom',
-      en: '16-key membrane keypad (1-9, 0, A-D, *, #) across R1-R4 & C1-C4',
-    },
     defaultProps: { activeKey: '' },
     pins: [
       { id: 'R1', label: 'R1', x: 16, y: 126, type: 'digital', exitDir: 'down' },
@@ -156,10 +128,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 116,
     height: 64,
     name: { id: 'Ultrasonik HC-SR04', en: 'HC-SR04 Ultrasonic' },
-    description: {
-      id: 'Sensor jarak 2-400 cm (TRIG/ECHO mikrodetik untuk pulseIn)',
-      en: '2-400 cm distance sensor (microsecond TRIG/ECHO for pulseIn)',
-    },
     defaultProps: { distanceCm: 45 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 40, y: 60, type: 'power', exitDir: 'down' },
@@ -174,10 +142,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 68,
     height: 76,
     name: { id: 'Suhu & Lembap DHT22/11', en: 'DHT22 / DHT11 Sensor' },
-    description: {
-      id: 'Sensor suhu & kelembapan 1-wire (kompatibel library DHT.h)',
-      en: 'Single-wire temperature & humidity sensor (DHT.h compatible)',
-    },
     defaultProps: { model: 'DHT22', tempC: 27.5, humidityPct: 60 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 22, y: 72, type: 'power', exitDir: 'down' },
@@ -191,10 +155,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 72,
     height: 72,
     name: { id: 'Sensor Gerak PIR', en: 'PIR Motion Sensor' },
-    description: {
-      id: 'Deteksi gerakan inframerah (OUT HIGH 5V saat aktif)',
-      en: 'Passive infrared motion detector (drives OUT HIGH 5V when triggered)',
-    },
     defaultProps: { motion: false },
     pins: [
       { id: 'VCC', label: 'VCC', x: 24, y: 68, type: 'power', exitDir: 'down' },
@@ -208,10 +168,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 60,
     height: 56,
     name: { id: 'Sensor Cahaya LDR', en: 'LDR Photoresistor' },
-    description: {
-      id: 'Hambatan berubah sesuai cahaya (lux), pasang dengan resistor sebagai pembagi tegangan',
-      en: 'Light-dependent resistor (lux slider), pair with a resistor as voltage divider',
-    },
     defaultProps: { lux: 300 },
     pins: [
       { id: '1', label: 'Pin 1', x: 24, y: 52, type: 'passive', exitDir: 'down' },
@@ -224,10 +180,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 56,
     height: 58,
     name: { id: 'Sensor Suhu LM35', en: 'LM35 Temperature' },
-    description: {
-      id: 'Output analog linear 10 mV/°C ke pin A0-A15',
-      en: 'Linear analog output 10 mV/°C directly to A0-A15',
-    },
     defaultProps: { tempC: 28 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 16, y: 54, type: 'power', exitDir: 'down' },
@@ -241,10 +193,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 72,
     height: 76,
     name: { id: 'Sensor Gas MQ-2', en: 'MQ-2 Gas Sensor' },
-    description: {
-      id: 'Deteksi asap/gas dengan output analog (AOUT) dan ambang digital (DOUT)',
-      en: 'Smoke/gas sensor with analog voltage (AOUT) and threshold digital (DOUT)',
-    },
     defaultProps: { gasPct: 18, thresholdPct: 50 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 18, y: 72, type: 'power', exitDir: 'down' },
@@ -260,10 +208,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 196,
     height: 92,
     name: { id: 'LCD 16x2 I2C', en: 'LCD 16x2 I2C' },
-    description: {
-      id: 'Layar karakter 16x2 PCF8574 alamat 0x27/0x3F (LiquidCrystal_I2C)',
-      en: '16x2 character display via PCF8574 I2C 0x27/0x3F (LiquidCrystal_I2C)',
-    },
     defaultProps: { i2cAddress: 0x27, color: 'green' },
     pins: [
       { id: 'GND', label: 'GND', x: 6, y: 26, type: 'gnd', exitDir: 'left' },
@@ -278,10 +222,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 156,
     height: 108,
     name: { id: 'OLED SSD1306 (128x64)', en: 'OLED SSD1306 (128x64)' },
-    description: {
-      id: 'Layar grafis I2C 128x64 alamat 0x3C (Adafruit_SSD1306)',
-      en: '128x64 monochrome I2C graphic OLED at 0x3C (Adafruit_SSD1306)',
-    },
     defaultProps: { i2cAddress: 0x3c },
     pins: [
       { id: 'GND', label: 'GND', x: 54, y: 6, type: 'gnd', exitDir: 'up' },
@@ -296,10 +236,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 72,
     height: 96,
     name: { id: '7-Segment 1 Digit', en: '7-Segment Display' },
-    description: {
-      id: 'Layar angka 7 segmen (a-g, dp) pilih Common Cathode atau Anode',
-      en: 'Single-digit 7-segment display (a-g, dp), Common Cathode or Anode',
-    },
     defaultProps: { common: 'cathode' },
     pins: [
       { id: 'g', label: 'g', x: 12, y: 6, type: 'passive', exitDir: 'up' },
@@ -320,10 +256,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 44,
     height: 58,
     name: { id: 'LED 5mm', en: '5mm LED' },
-    description: {
-      id: 'Indikator cahaya dengan deteksi arus berlebih (pilih warna)',
-      en: 'Light-emitting diode with current limiting check and color options',
-    },
     defaultProps: { color: 'red' },
     pins: [
       { id: 'A', label: 'Anoda (+)', x: 16, y: 54, type: 'passive', exitDir: 'down' },
@@ -336,10 +268,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 60,
     height: 60,
     name: { id: 'LED RGB', en: 'RGB LED' },
-    description: {
-      id: 'LED 3 warna (R, G, B) dengan pencampuran PWM Common Cathode / Anode',
-      en: '3-channel R/G/B LED with PWM color mixing (Common Cathode / Anode)',
-    },
     defaultProps: { common: 'cathode' },
     pins: [
       { id: 'R', label: 'R', x: 12, y: 56, type: 'passive', exitDir: 'down' },
@@ -354,10 +282,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 60,
     height: 64,
     name: { id: 'Buzzer Piezo', en: 'Piezo Buzzer' },
-    description: {
-      id: 'Penghasil nada dari tone() atau gelombang digital (indikator Hz)',
-      en: 'Audio transducer driven by tone() or digital waves (live Hz meter)',
-    },
     defaultProps: {},
     pins: [
       { id: '+', label: '+', x: 24, y: 60, type: 'digital', exitDir: 'down' },
@@ -370,10 +294,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 92,
     height: 72,
     name: { id: 'Modul Relay 5V', en: '5V Relay Module' },
-    description: {
-      id: 'Sakelar elektromagnetik SPDT (COM, NO, NC) aktif HIGH atau LOW',
-      en: 'SPDT electromechanical relay (COM, NO, NC), active HIGH or LOW',
-    },
     defaultProps: { activeLow: false },
     pins: [
       { id: 'VCC', label: 'VCC', x: 6, y: 20, type: 'power', exitDir: 'left' },
@@ -390,10 +310,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 96,
     height: 76,
     name: { id: 'Servo SG90', en: 'SG90 Micro Servo' },
-    description: {
-      id: 'Motor servo 0-180° (kompatibel penuh library Servo.h)',
-      en: '0-180° rotary servo motor (full Servo.h compatibility)',
-    },
     defaultProps: {},
     pins: [
       { id: 'GND', label: 'GND', x: 24, y: 72, type: 'gnd', exitDir: 'down' },
@@ -407,10 +323,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 84,
     height: 76,
     name: { id: 'Motor DC', en: 'DC Motor' },
-    description: {
-      id: 'Motor DC dua arah (CW/CCW) dengan pembacaan tegangan dan RPM',
-      en: 'Bidirectional DC motor (CW/CCW) with live terminal voltage and RPM',
-    },
     defaultProps: {},
     pins: [
       { id: '+', label: '+', x: 30, y: 72, type: 'passive', exitDir: 'down' },
@@ -424,10 +336,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 84,
     height: 72,
     name: { id: 'RTC DS3231 (I2C)', en: 'DS3231 RTC (I2C)' },
-    description: {
-      id: 'Modul jam waktu nyata I2C alamat 0x68 (kompatibel RTClib)',
-      en: 'Real-time clock module over I2C at 0x68 (RTClib compatible)',
-    },
     defaultProps: {},
     pins: [
       { id: 'GND', label: 'GND', x: 6, y: 18, type: 'gnd', exitDir: 'left' },
@@ -442,10 +350,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 88,
     height: 68,
     name: { id: 'IMU MPU6050 (I2C)', en: 'MPU6050 IMU (I2C)' },
-    description: {
-      id: 'Akselerometer & giroskop 6-sumbu I2C (0x68/0x69) dengan slider pitch/roll',
-      en: '6-axis accelerometer & gyroscope over I2C (0x68/0x69) with pitch/roll sliders',
-    },
     defaultProps: { i2cAddress: 0x68, pitchDeg: 0, rollDeg: 0, tempC: 25 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 26, y: 64, type: 'power', exitDir: 'down' },
@@ -460,10 +364,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 112,
     height: 112,
     name: { id: 'Matriks LED 8x8 MAX7219', en: 'MAX7219 8x8 LED Matrix' },
-    description: {
-      id: 'Layar dot-matrix 8x8 merah (kompatibel SPI & LedControl)',
-      en: '8x8 red dot-matrix display (hardware SPI & LedControl compatible)',
-    },
     defaultProps: {},
     pins: [
       { id: 'VCC', label: 'VCC', x: 6, y: 32, type: 'power', exitDir: 'left' },
@@ -479,10 +379,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 192,
     height: 44,
     name: { id: 'NeoPixel Strip (8 LED)', en: 'NeoPixel Strip (8 LEDs)' },
-    description: {
-      id: '8 LED RGB WS2812B 1-kabel (kompatibel Adafruit_NeoPixel)',
-      en: '8 addressable WS2812B RGB LEDs (Adafruit_NeoPixel compatible)',
-    },
     defaultProps: {},
     pins: [
       { id: 'VCC', label: '5V', x: 6, y: 10, type: 'power', exitDir: 'left' },
@@ -496,10 +392,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 108,
     height: 116,
     name: { id: 'RFID RC522 (SPI)', en: 'RC522 RFID Reader (SPI)' },
-    description: {
-      id: 'Pembaca kartu RFID 13.56 MHz SPI (kompatibel MFRC522) dengan kartu UID virtual',
-      en: '13.56 MHz SPI RFID reader (MFRC522 compatible) with tap-to-scan virtual card UID',
-    },
     defaultProps: { cardPresent: false, uid: 'DEADBEEF' },
     pins: [
       { id: 'SDA', label: 'SS', x: 18, y: 112, type: 'spi', exitDir: 'down' },
@@ -517,10 +409,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 96,
     height: 92,
     name: { id: 'Motor Stepper 4-Fase', en: '4-Wire Stepper Motor' },
-    description: {
-      id: 'Motor stepper 4 kumparan IN1-IN4 (kompatibel Stepper.h bawaan Arduino)',
-      en: '4-phase IN1-IN4 stepper motor (compatible with built-in Arduino Stepper.h)',
-    },
     defaultProps: { stepsPerRev: 200 },
     pins: [
       { id: 'IN1', label: 'IN1', x: 30, y: 88, type: 'digital', exitDir: 'down' },
@@ -535,10 +423,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 96,
     height: 76,
     name: { id: 'GPS NEO-6M (UART)', en: 'NEO-6M GPS (UART)' },
-    description: {
-      id: 'Modul GPS NMEA-0183 9600 baud (SoftwareSerial / Serial1) dengan koordinat kustom',
-      en: '9600-baud NMEA-0183 GPS module (SoftwareSerial / Serial1) with custom lat/lon',
-    },
     defaultProps: { lat: -6.2088, lon: 106.8456, speedKnots: 1.5 },
     pins: [
       { id: 'VCC', label: 'VCC', x: 30, y: 72, type: 'power', exitDir: 'down' },
@@ -553,10 +437,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 96,
     height: 72,
     name: { id: 'Bluetooth HC-05 (UART)', en: 'HC-05 Bluetooth (UART)' },
-    description: {
-      id: 'Transceiver serial Bluetooth 9600 baud dengan terminal kirim/terima di Properti',
-      en: '9600-baud Bluetooth UART transceiver with interactive terminal in Inspector',
-    },
     defaultProps: {},
     pins: [
       { id: 'VCC', label: 'VCC', x: 30, y: 68, type: 'power', exitDir: 'down' },
@@ -572,10 +452,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 132,
     height: 124,
     name: { id: 'Driver Motor L298N', en: 'L298N Motor Driver' },
-    description: {
-      id: 'Driver dual H-bridge untuk 2 motor DC atau stepper (ENA/IN1-IN4/ENB, 12V/5V)',
-      en: 'Dual H-bridge motor driver for 2 DC motors or stepper (ENA/IN1-IN4/ENB, 12V/5V)',
-    },
     defaultProps: { reg5vEnabled: true },
     pins: [
       { id: 'OUT1', label: 'OUT1', x: 6, y: 36, type: 'passive', exitDir: 'left' },
@@ -599,10 +475,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 124,
     height: 68,
     name: { id: 'Step-Down LM2596', en: 'LM2596 Step-Down (Buck)' },
-    description: {
-      id: 'Konverter penurun tegangan DC-DC (1.25V-35V, Vout <= Vin)',
-      en: 'Adjustable DC-DC buck step-down converter (1.25V-35V, Vout <= Vin)',
-    },
     defaultProps: { targetVoltage: 5.0 },
     pins: [
       { id: 'IN+', label: 'IN+', x: 6, y: 22, type: 'power', exitDir: 'left' },
@@ -617,10 +489,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 116,
     height: 64,
     name: { id: 'Step-Up MT3608', en: 'MT3608 Step-Up (Boost)' },
-    description: {
-      id: 'Konverter penaik tegangan DC-DC (2.5V-28V, Vout >= Vin)',
-      en: 'Adjustable DC-DC boost step-up converter (2.5V-28V, Vout >= Vin)',
-    },
     defaultProps: { targetVoltage: 12.0 },
     pins: [
       { id: 'IN+', label: 'IN+', x: 6, y: 20, type: 'power', exitDir: 'left' },
@@ -635,10 +503,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 116,
     height: 64,
     name: { id: 'Baterai 18650', en: '18650 Battery Pack' },
-    description: {
-      id: 'Baterai Li-ion 18650 pilih konfigurasi 1S (3.7V), 2S (7.4V), atau 3S (11.1V)',
-      en: 'Li-ion 18650 battery pack with 1S (3.7V), 2S (7.4V), or 3S (11.1V) series selection',
-    },
     defaultProps: { cells: 1, voltage: 3.7 },
     pins: [
       { id: '+', label: '+', x: 110, y: 20, type: 'power', exitDir: 'right' },
@@ -651,10 +515,6 @@ export const PART_CATALOG: PartManifest[] = [
     width: 124,
     height: 68,
     name: { id: 'Baterai LiPo 3S', en: '3S LiPo Battery (11.1V)' },
-    description: {
-      id: 'Baterai LiPo 3S nominal 11.1V (bisa atur tegangan 10.5V-12.6V)',
-      en: '3S LiPo battery pack 11.1V nominal (adjustable 10.5V-12.6V charge state)',
-    },
     defaultProps: { voltage: 11.1 },
     pins: [
       { id: '+', label: '+', x: 118, y: 22, type: 'power', exitDir: 'right' },
