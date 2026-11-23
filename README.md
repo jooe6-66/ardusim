@@ -1,13 +1,3 @@
----
-title: ArduSim Compiler
-emoji: ⚡
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # ArduSim
 
 Simulator Arduino berbasis **Web App + PWA** yang dirancang **touch-first** untuk Android, iPhone, iPad, tablet, dan desktop, dengan simulasi 100% di browser (`avr8js`) dan hosting **Rp 0**.
@@ -42,7 +32,7 @@ npm test
 Jalankan compiler backend & frontend dev server (bisa diakses dari HP di jaringan WiFi yang sama lewat IP LAN):
 
 ```bash
-# Terminal 1: Backend compiler (port 7860)
+# Terminal 1: Backend compiler (port 8080)
 npm run dev:compiler
 
 # Terminal 2: Frontend PWA (port 5173, exposed to LAN)
@@ -52,6 +42,6 @@ npm run dev:web
 Buka `http://<IP-LAN-PC>:5173` di Chrome Android atau Safari iPhone/iPad, lalu gunakan **Add to Home Screen** untuk mode aplikasi penuh (PWA).
 
 ## Deploy Gratis (Rp 0 Tanpa Kartu Kredit)
-Ikuti panduan langkah demi langkah lengkap di [DEPLOY.md](./DEPLOY.md) (GitHub -> **Cloudflare Pages** untuk Frontend PWA + **Hugging Face Spaces (Docker SDK)** untuk Compiler API).
+Ikuti panduan langkah demi langkah lengkap di [DEPLOY.md](./DEPLOY.md) (GitHub -> **Cloudflare Pages** untuk Frontend PWA + **Choreo by WSO2 / Container Docker Gratis / Tailscale Lokal** untuk Compiler API).
 
 Lihat roadmap lengkap di [ROADMAP.md](./ROADMAP.md) dan panduan desain di [DESIGN.md](./DESIGN.md).

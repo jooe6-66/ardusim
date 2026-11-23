@@ -21,37 +21,43 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install arduino-cli and prepare non-root app dir (built-in `node` user is UID 1000)
+# Install arduino-cli and prepare non-root app dir (UID/GID 10001 for Choreo compatibility)
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh \
-    && mkdir -p /home/node/app \
-    && chown node:node /home/node/app
+    && groupadd --gid 10001 ardusim \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/ardusim --shell /bin/sh ardusim \
+    && mkdir -p /home/ardusim/app \
+    && chown -R 10001:10001 /home/ardusim
 
-USER node
-WORKDIR /home/node/app
+USER 10001
+ENV HOME=/home/ardusim
+WORKDIR /home/ardusim/app
 
 RUN arduino-cli config init \
     && arduino-cli core update-index \
     && arduino-cli core install arduino:avr \
     && arduino-cli lib install "Servo" "Stepper" "LiquidCrystal I2C" "DHT sensor library" "Adafruit SSD1306" "Adafruit GFX Library" "Adafruit NeoPixel" "MFRC522" "RTClib" "LedControl" \
-    && rm -rf /home/node/.arduino15/staging
+    && rm -rf /home/ardusim/.arduino15/staging
 
-COPY --chown=node:node --from=builder /app/package.json ./
-COPY --chown=node:node --from=builder /app/node_modules ./node_modules
-COPY --chown=node:node --from=builder /app/packages/sim-core/package.json ./packages/sim-core/package.json
-COPY --chown=node:node --from=builder /app/packages/sim-core/dist ./packages/sim-core/dist
-COPY --chown=node:node --from=builder /app/apps/compiler/package.json ./apps/compiler/package.json
-COPY --chown=node:node --from=builder /app/apps/compiler/dist/src ./apps/compiler/dist/src
+COPY --chown=10001:10001 --from=builder /app/package.json ./
+COPY --chown=10001:10001 --from=builder /app/node_modules ./node_modules
+COPY --chown=10001:10001 --from=builder /app/packages/sim-core/package.json ./packages/sim-core/package.json
+COPY --chown=10001:10001 --from=builder /app/packages/sim-core/dist ./packages/sim-core/dist
+COPY --chown=10001:10001 --from=builder /app/apps/compiler/package.json ./apps/compiler/package.json
+COPY --chown=10001:10001 --from=builder /app/apps/compiler/dist/src ./apps/compiler/dist/src
 
 ENV NODE_ENV=production
-ENV PORT=7860
+ENV HOME=/home/ardusim
+ENV PORT=8080
 ENV HOST=0.0.0.0
-ENV MAX_CONCURRENT_COMPILES=2
+ENV MAX_CONCURRENT_COMPILES=1
 ENV MAX_QUEUE_SIZE=24
 ENV RATE_LIMIT_PER_MIN=120
-ENV COMPILE_TIMEOUT_MS=30000
+ENV COMPILE_TIMEOUT_MS=60000
+ENV NODE_OPTIONS=--max-old-space-size=192
 
-EXPOSE 7860
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD sh -c 'curl -fsS "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null || exit 1'
 CMD ["node", "apps/compiler/dist/src/server.js"]

@@ -217,7 +217,7 @@ export function createCompilerServer(
 
 const isMain = Boolean(process.argv[1]) && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
-  const port = parseIntEnv(process.env.PORT, 7860, 1);
+  const port = parseIntEnv(process.env.PORT, 8080, 1);
   const host = process.env.HOST ?? '0.0.0.0';
   const server = createCompilerServer();
 

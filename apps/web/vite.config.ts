@@ -8,7 +8,7 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: process.env.VITE_COMPILER_URL || 'http://127.0.0.1:7860',
+        target: process.env.VITE_COMPILER_URL || 'http://127.0.0.1:8080',
         changeOrigin: true,
       },
     },

@@ -1,0 +1,10 @@
+schemaVersion: 1.2
+endpoints:
+  - name: ardusim-compiler
+    displayName: ArduSim Compiler API
+    service:
+      basePath: /
+      port: 8080
+      type: REST
+    networkVisibilities:
+      - Public
