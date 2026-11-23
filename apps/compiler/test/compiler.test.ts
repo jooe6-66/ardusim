@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AvrSimulator, MultiMcuSimulator, PartInstance, PartManifest, Wire, parseIntelHex } from '@ardusim/sim-core';
-import { CompilerService } from '../src/runner.js';
-import { createCompilerServer } from '../src/server.js';
+import { CompileError, CompilerService, parseTimeoutEnv } from '../src/runner.js';
+import { createCompilerServer, isOriginAllowed, parseCorsOrigins } from '../src/server.js';
 
 const BLINK_SERIAL_SKETCH = `
 void setup() {
@@ -350,4 +350,109 @@ test('MultiMcuSimulator runs two Arduino Uno boards communicating over UART TX->
   assert.ok(logs.mcu1.includes('PING'), `Expected Master Serial PING, got: ${JSON.stringify(logs.mcu1)}`);
   assert.ok(logs.mcu2.includes('SLAVE_ACK_OK'), `Expected Slave Serial SLAVE_ACK_OK, got: ${JSON.stringify(logs.mcu2)}`);
   assert.equal(slaveLedOn, true, 'Expected Slave onboard D13 LED to turn ON after receiving PING + D8 HIGH');
+});
+
+test('CORS allowlist allows configured origins/wildcards, permits empty fallback, and blocks untrusted origins', async () => {
+  assert.deepEqual(
+    parseCorsOrigins(' https://ardusim.pages.dev/, https://*.ardusim.pages.dev , '),
+    ['https://ardusim.pages.dev', 'https://*.ardusim.pages.dev']
+  );
+  assert.equal(isOriginAllowed('https://anything.example', []), true);
+
+  const stubCompiler = {
+    resolveEngine: async () => 'arduino-cli' as const,
+    compile: async () => ({ hex: ':00000001FF', cached: false, engine: 'arduino-cli' as const, durationMs: 1, logs: '' }),
+  } as unknown as CompilerService;
+
+  const app = createCompilerServer(stubCompiler, {
+    corsOrigins: [
+      'https://ardusim.pages.dev',
+      'https://*.ardusim.pages.dev',
+      'http://localhost:5173',
+    ],
+  });
+
+  const exactRes = await app.inject({
+    method: 'GET',
+    url: '/api/health',
+    headers: { origin: 'https://ardusim.pages.dev' },
+  });
+  assert.equal(exactRes.headers['access-control-allow-origin'], 'https://ardusim.pages.dev');
+
+  const previewRes = await app.inject({
+    method: 'OPTIONS',
+    url: '/api/compile',
+    headers: {
+      origin: 'https://abc123.ardusim.pages.dev',
+      'access-control-request-method': 'POST',
+    },
+  });
+  assert.equal(previewRes.headers['access-control-allow-origin'], 'https://abc123.ardusim.pages.dev');
+
+  const localRes = await app.inject({
+    method: 'GET',
+    url: '/api/health',
+    headers: { origin: 'http://localhost:5173' },
+  });
+  assert.equal(localRes.headers['access-control-allow-origin'], 'http://localhost:5173');
+
+  const noOriginRes = await app.inject({ method: 'GET', url: '/api/health' });
+  assert.equal(noOriginRes.statusCode, 200);
+
+  const blockedEvil = await app.inject({
+    method: 'GET',
+    url: '/api/health',
+    headers: { origin: 'https://evil.example' },
+  });
+  assert.equal(blockedEvil.headers['access-control-allow-origin'], undefined);
+
+  const blockedSubdomainBypass = await app.inject({
+    method: 'GET',
+    url: '/api/health',
+    headers: { origin: 'https://evil.com.ardusim.pages.dev' },
+  });
+  assert.equal(blockedSubdomainBypass.headers['access-control-allow-origin'], undefined);
+
+  await app.close();
+});
+
+test('Root route returns service info, unavailable health returns 503, and timeout env falls back safely', async () => {
+  const unavailableCompiler = {
+    resolveEngine: async () => {
+      throw new CompileError('missing', 'missing', 503);
+    },
+    compile: async () => ({ hex: ':00000001FF', cached: false, engine: 'arduino-cli' as const, durationMs: 1, logs: '' }),
+  } as unknown as CompilerService;
+
+  const app = createCompilerServer(unavailableCompiler);
+
+  const rootRes = await app.inject({ method: 'GET', url: '/' });
+  assert.equal(rootRes.statusCode, 200);
+  assert.deepEqual(rootRes.json(), {
+    service: 'ardusim-compiler',
+    status: 'ok',
+    health: '/api/health',
+  });
+
+  const healthRes = await app.inject({ method: 'GET', url: '/api/health' });
+  assert.equal(healthRes.statusCode, 503);
+  const healthJson = healthRes.json() as { ok: boolean; engine: string };
+  assert.equal(healthJson.ok, false);
+  assert.equal(healthJson.engine, 'unavailable');
+
+  await app.close();
+
+  assert.equal(parseTimeoutEnv(undefined), 30_000);
+  assert.equal(parseTimeoutEnv('bad-value'), 30_000);
+  assert.equal(parseTimeoutEnv('-500'), 30_000);
+  assert.equal(parseTimeoutEnv('60000'), 60_000);
+
+  const prevTimeout = process.env.COMPILE_TIMEOUT_MS;
+  process.env.COMPILE_TIMEOUT_MS = '-100';
+  try {
+    assert.doesNotThrow(() => new CompilerService());
+  } finally {
+    if (prevTimeout === undefined) delete process.env.COMPILE_TIMEOUT_MS;
+    else process.env.COMPILE_TIMEOUT_MS = prevTimeout;
+  }
 });

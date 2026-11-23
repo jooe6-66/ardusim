@@ -38,7 +38,7 @@ import {
 import { exportWiringImage } from './utils/exportWiring';
 import type { WorkerInMessage, WorkerOutMessage } from './workers/sim.worker';
 
-const COMPILER_BASE = (import.meta.env.VITE_COMPILER_URL as string | undefined) || '';
+const COMPILER_BASE = ((import.meta.env.VITE_COMPILER_URL as string | undefined) || '').trim().replace(/\/+$/, '');
 
 interface CircuitHistoryState {
   board: BoardId;

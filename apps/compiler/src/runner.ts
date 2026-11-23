@@ -37,9 +37,19 @@ export class CompileError extends Error {
   }
 }
 
+export interface CompilerServiceOptions {
+  compileTimeoutMs?: number;
+}
+
 const MAX_SKETCH_BYTES = 64 * 1024;
-const COMPILE_TIMEOUT_MS = 15_000;
+const DEFAULT_COMPILE_TIMEOUT_MS = 30_000;
 const MAX_CACHE_ENTRIES = 120;
+
+export function parseTimeoutEnv(raw: string | undefined, fallback = DEFAULT_COMPILE_TIMEOUT_MS): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1000 ? n : fallback;
+}
 
 /** Blocks path traversal or absolute filesystem includes such as `#include "/etc/passwd"`. */
 export function validateSketchSafety(sketch: string): void {
@@ -88,9 +98,12 @@ export class CompilerService {
   private cache = new Map<string, { hex: string; logs: string }>();
   private cliAvailable: Promise<boolean> | null = null;
   private arduinoCliBin: string;
+  private readonly compileTimeoutMs: number;
 
-  constructor() {
+  constructor(opts: CompilerServiceOptions = {}) {
     this.arduinoCliBin = getArduinoCliBinary();
+    this.compileTimeoutMs =
+      opts.compileTimeoutMs ?? parseTimeoutEnv(process.env.COMPILE_TIMEOUT_MS, DEFAULT_COMPILE_TIMEOUT_MS);
   }
 
   async resolveEngine(): Promise<'arduino-cli'> {
@@ -157,13 +170,23 @@ export class CompilerService {
       const { stdout, stderr } = await execFileAsync(
         this.arduinoCliBin,
         ['compile', '--fqbn', fqbn, '--output-dir', buildDir, sketchDir],
-        { timeout: COMPILE_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 }
+        { timeout: this.compileTimeoutMs, maxBuffer: 2 * 1024 * 1024 }
       );
       const hex = await readFile(join(buildDir, 'sketch.ino.hex'), 'utf8');
       return { hex, logs: `${stdout}\n${stderr}`.trim() };
     } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const e = err as {
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+        killed?: boolean;
+        signal?: string;
+        code?: string | number;
+      };
       const logs = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim();
+      if (e.killed === true || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
+        throw new CompileError('Compilation timed out. Please retry.', logs, 504);
+      }
       throw new CompileError('Compilation failed', logs, 400);
     } finally {
       await rm(workDir, { recursive: true, force: true });

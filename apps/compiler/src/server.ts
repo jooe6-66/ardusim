@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { BOARD_SPECS, isSupportedBoard } from './boards.js';
@@ -7,6 +9,7 @@ export interface ServerOptions {
   rateLimitPerMin?: number;
   maxConcurrentCompiles?: number;
   maxQueueSize?: number;
+  corsOrigins?: string[];
 }
 
 class SimpleRateLimiter {
@@ -40,6 +43,26 @@ function parseIntEnv(raw: string | undefined, fallback: number, min: number): nu
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
 
+export function parseCorsOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
+/** Matches exact origins or safe single-segment wildcards (e.g. `https://*.ardusim.pages.dev`, `http://localhost:*`). */
+export function isOriginAllowed(origin: string | undefined, patterns: string[]): boolean {
+  if (!origin || patterns.length === 0 || patterns.includes('*')) return true;
+  for (const pattern of patterns) {
+    if (origin === pattern) return true;
+    if (!pattern.includes('*')) continue;
+    const regexSource: string = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/.:@]+');
+    if (new RegExp(`^${regexSource}$`).test(origin)) return true;
+  }
+  return false;
+}
+
 export function createCompilerServer(
   compiler = new CompilerService(),
   opts: ServerOptions = {}
@@ -47,6 +70,7 @@ export function createCompilerServer(
   const rateLimitPerMin = opts.rateLimitPerMin ?? parseIntEnv(process.env.RATE_LIMIT_PER_MIN, 120, 1);
   const maxConcurrent = opts.maxConcurrentCompiles ?? parseIntEnv(process.env.MAX_CONCURRENT_COMPILES, 2, 1);
   const maxQueueSize = opts.maxQueueSize ?? parseIntEnv(process.env.MAX_QUEUE_SIZE, 24, 0);
+  const allowedOrigins = opts.corsOrigins ?? parseCorsOrigins(process.env.CORS_ORIGIN);
   const limiter = new SimpleRateLimiter(rateLimitPerMin);
   let activeCompiles = 0;
   const compileQueue: Array<() => void> = [];
@@ -102,7 +126,9 @@ export function createCompilerServer(
   });
 
   app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      cb(null, isOriginAllowed(origin, allowedOrigins));
+    },
     methods: ['GET', 'POST', 'OPTIONS'],
   });
 
@@ -114,21 +140,28 @@ export function createCompilerServer(
     }
   });
 
-  app.get('/api/health', async () => {
+  app.get('/', async () => ({
+    service: 'ardusim-compiler',
+    status: 'ok',
+    health: '/api/health',
+  }));
+
+  app.get('/api/health', async (_req, reply) => {
     let engine = 'unavailable';
     try {
       engine = await compiler.resolveEngine();
     } catch {
       engine = 'unavailable';
     }
-    return {
-      ok: engine !== 'unavailable',
+    const ok = engine !== 'unavailable';
+    return reply.status(ok ? 200 : 503).send({
+      ok,
       engine,
       boards: Object.keys(BOARD_SPECS),
       activeCompiles,
       queuedCompiles: compileQueue.length,
       maxConcurrentCompiles: maxConcurrent,
-    };
+    });
   });
 
   app.post<{ Body: { board?: unknown; sketch?: unknown } }>('/api/compile', async (req, reply) => {
@@ -182,11 +215,29 @@ export function createCompilerServer(
   return app;
 }
 
-const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
+const isMain = Boolean(process.argv[1]) && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
-  const port = Number(process.env.PORT ?? 7860);
+  const port = parseIntEnv(process.env.PORT, 7860, 1);
   const host = process.env.HOST ?? '0.0.0.0';
   const server = createCompilerServer();
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}, shutting down ArduSim compiler...`);
+    try {
+      await server.close();
+      process.exit(0);
+    } catch (err) {
+      console.error('Error closing server:', err);
+      process.exit(1);
+    }
+  };
+
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+
   server
     .listen({ port, host })
     .then(() => {

@@ -12,6 +12,8 @@
     "dev:web": "npm run dev --workspace=@ardusim/web",
     "dev:compiler": "npm run dev --workspace=@ardusim/compiler",
     "build": "npm run build --workspace=@ardusim/sim-core && npm run build --workspace=@ardusim/parts && npm run build --workspace=@ardusim/compiler && npm run build --workspace=@ardusim/web",
+    "build:compiler": "npm run build --workspace=@ardusim/sim-core && npm run build --workspace=@ardusim/compiler",
+    "start:compiler": "node apps/compiler/dist/src/server.js",
     "test": "npm test --workspace=@ardusim/sim-core && npm test --workspace=@ardusim/compiler"
   }
 }
