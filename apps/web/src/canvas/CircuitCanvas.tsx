@@ -1600,7 +1600,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           </defs>
           <rect width="100%" height="100%" fill="url(#workbench-pitch)" />
 
-          <g transform={`translate(${view.x}, ${view.y}) scale(${view.scale})`}>
+          <g data-export-world="true" transform={`translate(${view.x}, ${view.y}) scale(${view.scale})`}>
             {sortedParts.map((part) => {
               const manifest = PART_MANIFEST_MAP.get(part.type);
               if (!manifest) return null;
@@ -1653,6 +1653,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 <g key={wire.id} pointerEvents="none">
                   {(isSelected || inSameNet) && (
                     <path
+                      data-export-ignore="true"
                       d={d}
                       fill="none"
                       stroke="var(--accent)"
@@ -1677,7 +1678,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
             })}
 
             {selectedRoutedWire && !wireDraft && mode !== 'delete' && mode !== 'wire' && (
-              <g pointerEvents="none">
+              <g data-export-ignore="true" pointerEvents="none">
                 {/* Segment midpoint handles: drag to slide segment or insert a new orthogonal bend */}
                 {selectedRoutedWire.pts.slice(0, -1).map((a, idx) => {
                   const b = selectedRoutedWire.pts[idx + 1];
@@ -1728,6 +1729,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 if (!wp) return null;
                 return (
                   <circle
+                    data-export-ignore="true"
                     key={`net-${key}`}
                     cx={wp.world.x}
                     cy={wp.world.y}
@@ -1741,7 +1743,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
               })}
 
             {wireDraft && draftPath && (
-              <g pointerEvents="none">
+              <g data-export-ignore="true" pointerEvents="none">
                 <path
                   d={draftPath}
                   fill="none"
@@ -1757,7 +1759,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
             )}
 
             {guides.length > 0 && (
-              <g pointerEvents="none">
+              <g data-export-ignore="true" pointerEvents="none">
                 {guides.map((g, idx) => {
                   const stroke = g.kind === 'pin' ? 'var(--accent)' : 'var(--primary)';
                   const sw = Math.max(1, 1.35 / view.scale);
@@ -1796,6 +1798,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 .filter((wp) => wp.part.type !== 'breadboard-half')
                 .map((wp) => (
                   <circle
+                    data-export-ignore="true"
                     key={`anchor-${wp.key}`}
                     cx={wp.world.x}
                     cy={wp.world.y}

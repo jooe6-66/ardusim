@@ -35,6 +35,7 @@ import {
   saveProjectToDb,
   saveWorkspaceDraft,
 } from './store/storage';
+import { exportWiringImage } from './utils/exportWiring';
 import type { WorkerInMessage, WorkerOutMessage } from './workers/sim.worker';
 
 const COMPILER_BASE = (import.meta.env.VITE_COMPILER_URL as string | undefined) || '';
@@ -1664,6 +1665,10 @@ export const App: React.FC = () => {
           } catch {
             return false;
           }
+        }}
+        onExportImage={async (format) => {
+          const slug = diagram.name.replace(/\s+/g, '-').toLowerCase() || 'ardusim';
+          return exportWiringImage(format, slug);
         }}
         theme={theme}
         onToggleTheme={() => setTheme((th) => (th === 'light' ? 'dark' : 'light'))}

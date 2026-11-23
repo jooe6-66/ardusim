@@ -11,8 +11,6 @@ export interface Messages {
   compiling: string;
   fileMenu: string;
   newBlank: string;
-  exportIno: string;
-  importIno: string;
   inoLoadedNotice: string;
   canvasEmptyTitle: string;
   canvasEmptyDesc: string;
@@ -155,9 +153,17 @@ export interface Messages {
   saveCurrent: string;
   savedNotice: string;
   projectNameLabel: string;
-  exportJson: string;
-  importJson: string;
-  importHex: string;
+  importFile: string;
+  importFileHint: string;
+  exportFormatLabel: string;
+  downloadBtn: string;
+  exportOptPng: string;
+  exportOptSvg: string;
+  exportOptJpg: string;
+  exportOptJson: string;
+  exportOptIno: string;
+  exportDoneNotice: (fmt: string) => string;
+  exportImageEmpty: string;
   hexLoadedNotice: string;
   invalidFileError: string;
   touchGuideHeading: string;
@@ -217,8 +223,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     compiling: 'Mengompilasi...',
     fileMenu: 'File',
     newBlank: 'Baru (Kosong)',
-    exportIno: 'Ekspor .ino',
-    importIno: 'Impor .ino',
     inoLoadedNotice: 'File sketch .ino berhasil dimuat ke editor.',
     canvasEmptyTitle: 'Kanvas Kosong',
     canvasEmptyDesc: 'Pilih board Arduino di pojok kiri atas, lalu tambahkan komponen untuk mulai merangkai atau buka contoh lewat menu File.',
@@ -361,9 +365,17 @@ export const MESSAGES: Record<Lang, Messages> = {
     saveCurrent: 'Simpan Proyek',
     savedNotice: 'Proyek tersimpan di perangkat.',
     projectNameLabel: 'Nama Proyek',
-    exportJson: 'Ekspor JSON',
-    importJson: 'Impor JSON',
-    importHex: 'Impor .hex',
+    importFile: 'Impor File',
+    importFileHint: 'Impor proyek .json, sketch .ino, atau firmware .hex',
+    exportFormatLabel: 'Format ekspor',
+    downloadBtn: 'Unduh',
+    exportOptPng: 'PNG (Gambar Wiring)',
+    exportOptSvg: 'SVG (Vektor Wiring)',
+    exportOptJpg: 'JPG (Gambar Wiring)',
+    exportOptJson: 'JSON (Proyek)',
+    exportOptIno: '.ino (Sketch)',
+    exportDoneNotice: (fmt) => `Berhasil mengunduh ${fmt}.`,
+    exportImageEmpty: 'Tambahkan komponen dulu untuk ekspor gambar.',
     hexLoadedNotice: 'File .hex siap dijalankan offline.',
     invalidFileError: 'Format file tidak valid.',
     touchGuideHeading: 'Panduan Layar Sentuh',
@@ -424,8 +436,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     compiling: 'Compiling...',
     fileMenu: 'File',
     newBlank: 'New (Blank)',
-    exportIno: 'Export .ino',
-    importIno: 'Import .ino',
     inoLoadedNotice: 'Arduino .ino sketch loaded into editor.',
     canvasEmptyTitle: 'Empty Workbench',
     canvasEmptyDesc: 'Choose an Arduino board in the top-left menu, then add components to start wiring or open a template from File.',
@@ -568,9 +578,17 @@ export const MESSAGES: Record<Lang, Messages> = {
     saveCurrent: 'Save Project',
     savedNotice: 'Project saved locally.',
     projectNameLabel: 'Project Name',
-    exportJson: 'Export JSON',
-    importJson: 'Import JSON',
-    importHex: 'Import .hex',
+    importFile: 'Import File',
+    importFileHint: 'Import .json project, .ino sketch, or .hex firmware',
+    exportFormatLabel: 'Export format',
+    downloadBtn: 'Download',
+    exportOptPng: 'PNG (Wiring Image)',
+    exportOptSvg: 'SVG (Vector Wiring)',
+    exportOptJpg: 'JPG (Wiring Image)',
+    exportOptJson: 'JSON (Project)',
+    exportOptIno: '.ino (Sketch)',
+    exportDoneNotice: (fmt) => `Downloaded ${fmt}.`,
+    exportImageEmpty: 'Add components first to export an image.',
     hexLoadedNotice: 'Imported .hex is ready to run offline.',
     invalidFileError: 'Invalid file format.',
     touchGuideHeading: 'Touchscreen Controls',

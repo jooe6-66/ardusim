@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { CircuitDiagram } from '@ardusim/sim-core';
 import { STARTER_TEMPLATES, StarterTemplate } from '../examples/templates';
 import { Lang, Messages } from '../i18n/messages';
+import { WiringImageFormat } from '../utils/exportWiring';
+
+type ExportChoice = WiringImageFormat | 'json' | 'ino';
 
 interface ProjectMenuProps {
   open: boolean;
@@ -18,6 +21,7 @@ interface ProjectMenuProps {
   onExportIno: () => void;
   onImportIno: (text: string) => boolean;
   onImportHex: (hex: string) => boolean;
+  onExportImage: (format: WiringImageFormat) => Promise<boolean>;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   onToggleLang: () => void;
@@ -40,6 +44,7 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
   onExportIno,
   onImportIno,
   onImportHex,
+  onExportImage,
   theme,
   onToggleTheme,
   onToggleLang,
@@ -47,13 +52,16 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
   t,
 }) => {
   const [notice, setNotice] = useState<string | null>(null);
-  const jsonInputRef = useRef<HTMLInputElement>(null);
-  const inoInputRef = useRef<HTMLInputElement>(null);
-  const hexInputRef = useRef<HTMLInputElement>(null);
+  const [exportFormat, setExportFormat] = useState<ExportChoice>('png');
+  const [exporting, setExporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) setNotice(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    setNotice(null);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -135,75 +143,91 @@ export const ProjectMenu: React.FC<ProjectMenuProps> = ({
             </div>
           </div>
 
-          <div className="cat-chips">
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               type="button"
               className="btn btn-compact"
-              onClick={() => jsonInputRef.current?.click()}
+              title={t.importFileHint}
+              onClick={() => fileInputRef.current?.click()}
             >
-              {t.importJson}
+              {t.importFile}
             </button>
-            <button type="button" className="btn btn-compact" onClick={onExportJson}>
-              {t.exportJson}
-            </button>
-            <button
-              type="button"
-              className="btn btn-compact"
-              onClick={() => inoInputRef.current?.click()}
-            >
-              {t.importIno}
-            </button>
-            <button type="button" className="btn btn-compact" onClick={onExportIno}>
-              {t.exportIno}
-            </button>
-            <button
-              type="button"
-              className="btn btn-compact"
-              onClick={() => hexInputRef.current?.click()}
-            >
-              {t.importHex}
-            </button>
+            <div style={{ display: 'flex', gap: 6, flex: '1 1 220px', alignItems: 'center' }}>
+              <select
+                className="select-input"
+                style={{ flex: '1 1 150px', minWidth: 140 }}
+                aria-label={t.exportFormatLabel}
+                value={exportFormat}
+                onChange={(e) => setExportFormat(e.target.value as ExportChoice)}
+              >
+                <option value="png">{t.exportOptPng}</option>
+                <option value="svg">{t.exportOptSvg}</option>
+                <option value="jpg">{t.exportOptJpg}</option>
+                <option value="json">{t.exportOptJson}</option>
+                <option value="ino">{t.exportOptIno}</option>
+              </select>
+              <button
+                type="button"
+                className="btn btn-compact btn-primary"
+                disabled={exporting}
+                onClick={async () => {
+                  if (exportFormat === 'json') {
+                    onExportJson();
+                    setNotice(t.exportDoneNotice('JSON'));
+                    return;
+                  }
+                  if (exportFormat === 'ino') {
+                    onExportIno();
+                    setNotice(t.exportDoneNotice('.ino'));
+                    return;
+                  }
+                  setExporting(true);
+                  try {
+                    const ok = await onExportImage(exportFormat);
+                    setNotice(ok ? t.exportDoneNotice(exportFormat.toUpperCase()) : t.exportImageEmpty);
+                  } catch {
+                    setNotice(t.invalidFileError);
+                  } finally {
+                    setExporting(false);
+                  }
+                }}
+              >
+                {t.downloadBtn}
+              </button>
+            </div>
             <input
-              ref={jsonInputRef}
+              ref={fileInputRef}
               type="file"
-              accept=".json,application/json"
+              accept=".json,.ino,.cpp,.c,.h,.hex,.txt,application/json,text/plain"
               style={{ display: 'none' }}
               onChange={async (e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
-                const ok = onImportJson(await file.text());
+                const text = await file.text();
+                const name = file.name.toLowerCase();
+                const trimmed = text.trim();
                 e.target.value = '';
-                if (ok) {
-                  onClose();
+
+                const looksHex =
+                  name.endsWith('.hex') ||
+                  (trimmed.startsWith(':') &&
+                    trimmed
+                      .split(/\r?\n/)
+                      .filter(Boolean)
+                      .every((line) => /^:[0-9a-fA-F]{10,}$/.test(line.trim())));
+                const looksJson = name.endsWith('.json') || trimmed.startsWith('{');
+
+                if (looksJson) {
+                  const ok = onImportJson(text);
+                  if (ok) onClose();
+                  else setNotice(t.invalidFileError);
+                } else if (looksHex) {
+                  const ok = onImportHex(text);
+                  setNotice(ok ? t.hexLoadedNotice : t.invalidFileError);
                 } else {
-                  setNotice(t.invalidFileError);
+                  const ok = onImportIno(text);
+                  setNotice(ok ? t.inoLoadedNotice : t.invalidFileError);
                 }
-              }}
-            />
-            <input
-              ref={inoInputRef}
-              type="file"
-              accept=".ino,.cpp,.c,.h,.txt,text/plain"
-              style={{ display: 'none' }}
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const ok = onImportIno(await file.text());
-                setNotice(ok ? t.inoLoadedNotice : t.invalidFileError);
-                e.target.value = '';
-              }}
-            />
-            <input
-              ref={hexInputRef}
-              type="file"
-              accept=".hex,text/plain"
-              style={{ display: 'none' }}
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const ok = onImportHex(await file.text());
-                setNotice(ok ? t.hexLoadedNotice : t.invalidFileError);
-                e.target.value = '';
               }}
             />
           </div>
