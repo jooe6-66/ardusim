@@ -702,7 +702,7 @@ export function autoTidyWires(
     candidates.push(simplifyOrthogonal([a, { x: a.x, y: b.y }, b]));
 
     // 2-bend & 3-bend clean stub-to-stub channel candidates at staggered 12px lane offsets
-    const offsets = [0, 12, -12, 24, -24, 36, -36, 48, -48];
+    const offsets = [0, 12, -12, 24, -24, 36, -36, 48, -48, 60, -60, 72, -72];
     const fromVert = fromInfo.exitDir === 'up' || fromInfo.exitDir === 'down';
     const toVert = toInfo.exitDir === 'up' || toInfo.exitDir === 'down';
 
@@ -1050,14 +1050,16 @@ const CATEGORY_ORDER: Record<PartManifest['category'], number> = {
 const TOP_ZONE_CATEGORIES = new Set<PartManifest['category']>(['sensor', 'display']);
 
 /**
- * Groups directly wired non-MCU/non-breadboard peripherals into ordered left-to-right chains
- * (for example diode -> resistor -> led or ldr -> resistor) so signal flow stays linear.
+ * Groups directly wired non-MCU/non-breadboard peripherals into ordered signal chains
+ * (for example diode -> resistor -> led or ldr -> resistor), ignoring shared power/GND bus wires.
  */
 function buildPeripheralChains(
   peripherals: PartInstance[],
   wires: Wire[],
   mcuId: string | null,
-  manifests: Map<string, PartManifest>
+  manifests: Map<string, PartManifest>,
+  railNetIds?: Set<string>,
+  pinToNet?: Map<string, string>
 ): PartInstance[][] {
   const partById = new Map(peripherals.map((p) => [p.id, p]));
   const adj = new Map<string, Set<string>>();
@@ -1065,6 +1067,10 @@ function buildPeripheralChains(
 
   for (const p of peripherals) adj.set(p.id, new Set());
   for (const w of wires) {
+    if (railNetIds && pinToNet) {
+      const net = pinToNet.get(pinKey(w.from));
+      if (net && railNetIds.has(net)) continue;
+    }
     const a = w.from.partId;
     const b = w.to.partId;
     if (a === mcuId && partById.has(b)) mcuConnected.add(b);
@@ -1222,11 +1228,241 @@ function placeRowsAt(
   };
 }
 
+const isAxialPassive = (type: string): boolean => type === 'resistor' || type === 'diode';
+
+/**
+ * Checks whether a chain in a top/bottom header zone should stack vertically
+ * (e.g. Resistor -> LED, Diode -> Resistor -> LED, LDR -> Resistor) so each slot
+ * stays narrow and aligns straight with the MCU header pins.
+ */
+function shouldStackVertically(chain: PartInstance[]): boolean {
+  return chain.length >= 2 && chain.length <= 3 && chain.some((p) => isAxialPassive(p.type));
+}
+
+/** Orients axial passives inside a vertically stacked top/bottom chain so signal flows straight along Y. */
+function orientVerticalChain(
+  chain: PartInstance[],
+  direction: 'up' | 'down',
+  wires: Wire[]
+): PartInstance[] {
+  return chain.map((part, idx) => {
+    if (!isAxialPassive(part.type)) return part;
+    // Determine which pin ('1'/'A' vs '2'/'C') faces the next item farther from the MCU
+    const nextPart = chain[idx + 1];
+    const prevPart = chain[idx - 1];
+    const firstPinId = part.type === 'diode' ? 'A' : '1';
+    const secondPinId = part.type === 'diode' ? 'C' : '2';
+
+    let firstFacesMcu = true;
+    if (nextPart) {
+      const wToNext = wires.find(
+        (w) =>
+          (w.from.partId === part.id && w.to.partId === nextPart.id) ||
+          (w.to.partId === part.id && w.from.partId === nextPart.id)
+      );
+      if (wToNext) {
+        const myPin = wToNext.from.partId === part.id ? wToNext.from.pinId : wToNext.to.pinId;
+        firstFacesMcu = myPin === secondPinId;
+      }
+    } else if (prevPart) {
+      const wToPrev = wires.find(
+        (w) =>
+          (w.from.partId === part.id && w.to.partId === prevPart.id) ||
+          (w.to.partId === part.id && w.from.partId === prevPart.id)
+      );
+      if (wToPrev) {
+        const myPin = wToPrev.from.partId === part.id ? wToPrev.from.pinId : wToPrev.to.pinId;
+        firstFacesMcu = myPin === firstPinId;
+      }
+    }
+
+    // At rot=270: left pin ('1'/'A') points DOWN, right pin ('2'/'C') points UP.
+    // At rot=90:  left pin ('1'/'A') points UP,   right pin ('2'/'C') points DOWN.
+    const rotation: PartInstance['rotation'] =
+      direction === 'up' ? (firstFacesMcu ? 270 : 90) : firstFacesMcu ? 90 : 270;
+    return { ...part, rotation, flipX: false, flipY: false };
+  });
+}
+
+function measureHeaderChain(
+  chain: PartInstance[],
+  manifests: Map<string, PartManifest>,
+  chainGapX: number,
+  stackGapY: number
+): { w: number; h: number; vertical: boolean } {
+  if (shouldStackVertically(chain)) {
+    let w = 0;
+    let h = 0;
+    for (let i = 0; i < chain.length; i++) {
+      const m = manifests.get(chain[i].type);
+      if (!m) continue;
+      const sz = getEffectiveSize(chain[i], m);
+      w = Math.max(w, sz.w);
+      h += sz.h + (i > 0 ? stackGapY : 0);
+    }
+    return { w, h, vertical: true };
+  }
+  let w = 0;
+  let h = 0;
+  for (let i = 0; i < chain.length; i++) {
+    const m = manifests.get(chain[i].type);
+    if (!m) continue;
+    const sz = getEffectiveSize(chain[i], m);
+    w += sz.w + (i > 0 ? chainGapX : 0);
+    h = Math.max(h, sz.h);
+  }
+  return { w, h, vertical: false };
+}
+
+function packHeaderChainsIntoRows(
+  chains: PartInstance[][],
+  manifests: Map<string, PartManifest>,
+  maxRowW: number,
+  itemGapX: number,
+  chainGapX: number,
+  stackGapY: number
+): LayoutRowSpec[] {
+  const rows: LayoutRowSpec[] = [];
+  let currentChains: PartInstance[][] = [];
+  let currentW = 0;
+  let currentH = 0;
+
+  const flush = () => {
+    if (currentChains.length === 0) return;
+    rows.push({ chains: currentChains, width: currentW, height: currentH });
+    currentChains = [];
+    currentW = 0;
+    currentH = 0;
+  };
+
+  for (const chain of chains) {
+    const { w: chainW, h: chainH } = measureHeaderChain(chain, manifests, chainGapX, stackGapY);
+    const addedW = currentChains.length > 0 ? itemGapX + chainW : chainW;
+    if (currentChains.length > 0 && currentW + addedW > maxRowW) {
+      flush();
+    }
+    if (currentChains.length > 0) currentW += itemGapX;
+    currentChains.push(chain);
+    currentW += chainW;
+    currentH = Math.max(currentH, chainH);
+  }
+  flush();
+  return rows;
+}
+
+/** Places header-facing rows (top or bottom of MCU), stacking axial series chains cleanly along Y. */
+function placeHeaderRows(
+  rows: LayoutRowSpec[],
+  bandCenterX: number,
+  startY: number,
+  direction: 'up' | 'down',
+  rowGapY: number,
+  itemGapX: number,
+  chainGapX: number,
+  stackGapY: number,
+  wires: Wire[],
+  manifests: Map<string, PartManifest>,
+  out: Map<string, PartInstance>,
+  minLeftX: number
+): { bottomY: number; minX: number; maxRightX: number } {
+  let y = snapGrid(startY);
+  let minX = Infinity;
+  let maxRightX = minLeftX;
+
+  for (const row of rows) {
+    let x = Math.max(minLeftX, snapGrid(bandCenterX - row.width / 2));
+    minX = Math.min(minX, x);
+    row.chains.forEach((chain, ci) => {
+      if (ci > 0) x = snapGrid(x + itemGapX);
+      const meas = measureHeaderChain(chain, manifests, chainGapX, stackGapY);
+      if (meas.vertical) {
+        // TOP zone: partLast at top, part0 at bottom (facing MCU).
+        // BOTTOM zone: part0 at top (facing MCU), partLast at bottom.
+        const visualOrder = direction === 'up' ? chain.slice().reverse() : chain;
+        let cy = direction === 'up' ? snapGrid(y + (row.height - meas.h)) : y;
+
+        // First place non-axial anchor parts (e.g. LED / LDR) horizontally centered in the slot
+        const placedInCol = new Map<string, PartInstance>();
+        const ySlots: number[] = [];
+        for (const p of visualOrder) {
+          const m = manifests.get(p.type);
+          ySlots.push(cy);
+          if (m) cy = snapGrid(cy + getEffectiveSize(p, m).h + stackGapY);
+        }
+
+        visualOrder.forEach((p, idx) => {
+          const m = manifests.get(p.type);
+          if (!m || isAxialPassive(p.type)) return;
+          const sz = getEffectiveSize(p, m);
+          const bx = snapGrid(x + (meas.w - sz.w) / 2);
+          const inst = placeAtVisualBox(p, m, bx, ySlots[idx]);
+          placedInCol.set(p.id, inst);
+          out.set(p.id, inst);
+        });
+
+        // Then align axial passives dead-straight on X with their directly connected neighbor pin
+        visualOrder.forEach((p, idx) => {
+          const m = manifests.get(p.type);
+          if (!m || !isAxialPassive(p.type)) return;
+          const sz = getEffectiveSize(p, m);
+          let alignedX: number | null = null;
+          for (const w of wires) {
+            const otherId = w.from.partId === p.id ? w.to.partId : w.to.partId === p.id ? w.from.partId : null;
+            const otherPinId = w.from.partId === p.id ? w.to.pinId : w.to.partId === p.id ? w.from.pinId : null;
+            if (!otherId || !otherPinId) continue;
+            const otherInst = placedInCol.get(otherId);
+            const otherMan = otherInst ? manifests.get(otherInst.type) : undefined;
+            const otherPin = otherMan?.pins.find((pn) => pn.id === otherPinId);
+            if (otherInst && otherMan && otherPin) {
+              const targetX = getPinWorldPosition(otherInst, otherMan, otherPin).x;
+              // Vertical axial passive pins lie on its visual centerline (part.x + m.width / 2)
+              alignedX = targetX - m.width / 2;
+              break;
+            }
+          }
+          const inst =
+            alignedX !== null
+              ? {
+                  ...p,
+                  x: alignedX,
+                  y: snapGrid(ySlots[idx] + (sz.h - m.height) / 2),
+                }
+              : placeAtVisualBox(p, m, snapGrid(x + (meas.w - sz.w) / 2), ySlots[idx]);
+          placedInCol.set(p.id, inst);
+          out.set(p.id, inst);
+        });
+
+        x = snapGrid(x + meas.w);
+        maxRightX = Math.max(maxRightX, x);
+      } else {
+        chain.forEach((part, pi) => {
+          const m = manifests.get(part.type);
+          if (!m) return;
+          if (pi > 0) x = snapGrid(x + chainGapX);
+          const { w, h } = getEffectiveSize(part, m);
+          const alignedY =
+            direction === 'up' ? snapGrid(y + (row.height - h)) : y;
+          out.set(part.id, placeAtVisualBox(part, m, x, alignedY));
+          x = snapGrid(x + w);
+          maxRightX = Math.max(maxRightX, x);
+        });
+      }
+    });
+    y = snapGrid(y + row.height + rowGapY);
+  }
+
+  return {
+    bottomY: rows.length > 0 ? y - rowGapY : startY,
+    minX: Number.isFinite(minX) ? minX : minLeftX,
+    maxRightX,
+  };
+}
+
 /**
  * Arranges both component placement and jumper wire routing cleanly:
- * - Resolves overlapping parts into well-spaced functional/pin-affinity zones
- * - Preserves part rotations and flips while keeping 60-96px wiring corridors
- * - Runs obstacle-aware orthogonal wire routing with channel separation
+ * - Places header-connected peripherals in aligned rows facing their MCU pin header (top / bottom / right / left)
+ * - Stacks inline axial passives (resistor/diode) vertically along signal paths for zero-kink alignment
+ * - Sorts strictly by signal pins (ignoring shared GND/5V rails) and routes obstacle-aware orthogonal wires
  */
 export function autoTidyCircuit(
   parts: PartInstance[],
@@ -1235,36 +1471,100 @@ export function autoTidyCircuit(
 ): { parts: PartInstance[]; wires: Wire[] } {
   if (parts.length === 0) return { parts, wires };
 
-  const ITEM_GAP_X = 60;
+  const ITEM_GAP_X = 48;
   const CHAIN_GAP_X = 48;
+  const STACK_GAP_Y = 48;
   const ROW_GAP_Y = 72;
   const ZONE_GAP_X = 96;
   const ZONE_GAP_Y = 72;
   const ORIGIN_X = 48;
   const ORIGIN_Y = 36;
 
-  const mcuPart = parts.find((p) => isMcuBoardType(p.type)) ?? null;
+  const mcuParts = parts.filter((p) => isMcuBoardType(p.type));
+  const mcuPart = mcuParts[0] ?? null;
+  const extraMcus = mcuParts.slice(1);
   const mcuManifest = mcuPart ? manifests.get(mcuPart.type) : undefined;
   const breadboards = parts.filter((p) => p.type === 'breadboard-half');
-  const peripherals = parts.filter((p) => p !== mcuPart && p.type !== 'breadboard-half');
+  const peripherals = parts.filter((p) => !isMcuBoardType(p.type) && p.type !== 'breadboard-half');
 
   const placed = new Map<string, PartInstance>();
 
-  // Compute each peripheral's vertical/horizontal affinity to the MCU board's pins
-  const pinAffinity = new Map<string, { sumY: number; sumX: number; count: number }>();
+  // Identify shared MCU power/GND rail nets so common bus wires do not glue unrelated parts into one chain
+  const netlist = buildNetlist(parts, wires, manifests);
+  const railNetIds = new Set<string>();
+  for (const mp of mcuParts) {
+    const mm = manifests.get(mp.type);
+    if (!mm) continue;
+    for (const pin of mm.pins) {
+      if (pin.type === 'gnd' || pin.type === 'power') {
+        const net = netlist.pinToNet.get(`${mp.id}:${pin.id}`);
+        if (net) railNetIds.add(net);
+      }
+    }
+  }
+
+  type HeaderZone = 'top' | 'bottom' | 'right' | 'left';
+  interface AffinityStats {
+    sigSumY: number;
+    sigSumX: number;
+    sigCount: number;
+    sigZones: Record<HeaderZone, number>;
+    pwrSumY: number;
+    pwrSumX: number;
+    pwrCount: number;
+    pwrZones: Record<HeaderZone, number>;
+  }
+  const makeStats = (): AffinityStats => ({
+    sigSumY: 0,
+    sigSumX: 0,
+    sigCount: 0,
+    sigZones: { top: 0, bottom: 0, right: 0, left: 0 },
+    pwrSumY: 0,
+    pwrSumX: 0,
+    pwrCount: 0,
+    pwrZones: { top: 0, bottom: 0, right: 0, left: 0 },
+  });
+
+  // Compute each peripheral's header-zone & coordinate affinity strictly from MCU signal pins (power/GND fallback)
+  const pinAffinity = new Map<string, AffinityStats>();
   if (mcuPart && mcuManifest) {
     const refMcu: PartInstance = { ...mcuPart, x: 0, y: 0 };
-    const mcuPinPos = new Map<string, Point>();
+    const mcuSize = getEffectiveSize(mcuPart, mcuManifest);
+    const mcuPinMeta = new Map<string, { pt: Point; isPower: boolean; zone: HeaderZone }>();
     for (const pin of mcuManifest.pins) {
-      mcuPinPos.set(pin.id, getPinWorldPosition(refMcu, mcuManifest, pin));
+      const pt = getPinWorldPosition(refMcu, mcuManifest, pin);
+      const exit = rotateExitDir(pin.exitDir, mcuPart.rotation, mcuPart.flipX, mcuPart.flipY);
+      let zone: HeaderZone;
+      if (exit === 'up') zone = 'top';
+      else if (exit === 'down') zone = 'bottom';
+      else if (exit === 'right') zone = 'right';
+      else if (exit === 'left') zone = 'left';
+      else if (pt.y <= mcuSize.h * 0.25) zone = 'top';
+      else if (pt.y >= mcuSize.h * 0.75) zone = 'bottom';
+      else if (pt.x >= mcuSize.w * 0.75) zone = 'right';
+      else if (pt.x <= mcuSize.w * 0.25) zone = 'left';
+      else zone = pt.y <= mcuSize.h / 2 ? 'top' : 'bottom';
+      mcuPinMeta.set(pin.id, {
+        pt,
+        isPower: pin.type === 'power' || pin.type === 'gnd',
+        zone,
+      });
     }
     const addHit = (partId: string, pinId: string) => {
-      const pt = mcuPinPos.get(pinId);
-      if (!pt) return;
-      const cur = pinAffinity.get(partId) ?? { sumY: 0, sumX: 0, count: 0 };
-      cur.sumY += pt.y;
-      cur.sumX += pt.x;
-      cur.count += 1;
+      const meta = mcuPinMeta.get(pinId);
+      if (!meta) return;
+      const cur = pinAffinity.get(partId) ?? makeStats();
+      if (meta.isPower) {
+        cur.pwrSumY += meta.pt.y;
+        cur.pwrSumX += meta.pt.x;
+        cur.pwrCount += 1;
+        cur.pwrZones[meta.zone] += 1;
+      } else {
+        cur.sigSumY += meta.pt.y;
+        cur.sigSumX += meta.pt.x;
+        cur.sigCount += 1;
+        cur.sigZones[meta.zone] += 1;
+      }
       pinAffinity.set(partId, cur);
     };
     for (const w of wires) {
@@ -1276,26 +1576,51 @@ export function autoTidyCircuit(
     }
   }
 
-  const chains = buildPeripheralChains(peripherals, wires, mcuPart?.id ?? null, manifests);
+  const chains = buildPeripheralChains(
+    peripherals,
+    wires,
+    mcuPart?.id ?? null,
+    manifests,
+    railNetIds,
+    netlist.pinToNet
+  );
 
   const chainScore = (chain: PartInstance[]) => {
-    let sumY = 0;
-    let sumX = 0;
-    let count = 0;
+    const agg = makeStats();
     for (const p of chain) {
       const a = pinAffinity.get(p.id);
-      if (a) {
-        sumY += a.sumY;
-        sumX += a.sumX;
-        count += a.count;
+      if (!a) continue;
+      agg.sigSumY += a.sigSumY;
+      agg.sigSumX += a.sigSumX;
+      agg.sigCount += a.sigCount;
+      agg.pwrSumY += a.pwrSumY;
+      agg.pwrSumX += a.pwrSumX;
+      agg.pwrCount += a.pwrCount;
+      for (const z of ['top', 'bottom', 'right', 'left'] as const) {
+        agg.sigZones[z] += a.sigZones[z];
+        agg.pwrZones[z] += a.pwrZones[z];
+      }
+    }
+    const useSig = agg.sigCount > 0;
+    const count = useSig ? agg.sigCount : agg.pwrCount;
+    const zones = useSig ? agg.sigZones : agg.pwrZones;
+    let dominantZone: HeaderZone = 'top';
+    let bestHits = -1;
+    for (const z of ['top', 'bottom', 'right', 'left'] as const) {
+      if (zones[z] > bestHits) {
+        bestHits = zones[z];
+        dominantZone = z;
       }
     }
     const firstCat = CATEGORY_ORDER[manifests.get(chain[0].type)?.category ?? 'output'];
+    const isPowerChain = chain.some((p) => manifests.get(p.type)?.category === 'power');
     return {
       hasAffinity: count > 0,
-      avgY: count > 0 ? sumY / count : 0,
-      avgX: count > 0 ? sumX / count : 0,
+      avgY: count > 0 ? (useSig ? agg.sigSumY : agg.pwrSumY) / count : 0,
+      avgX: count > 0 ? (useSig ? agg.sigSumX : agg.pwrSumX) / count : 0,
+      zone: dominantZone,
       firstCat,
+      isPowerChain,
     };
   };
 
@@ -1317,7 +1642,7 @@ export function autoTidyCircuit(
 
     let cursorY = ORIGIN_Y;
     if (topChains.length > 0) {
-      const topRows = packChainsIntoRows(topChains, manifests, 560, ITEM_GAP_X, CHAIN_GAP_X);
+      const topRows = packChainsIntoRows(topChains, manifests, 640, ITEM_GAP_X, CHAIN_GAP_X);
       const res = placeRowsAt(topRows, ORIGIN_X, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
       cursorY = snapGrid(res.bottomY + ZONE_GAP_Y);
     }
@@ -1335,70 +1660,153 @@ export function autoTidyCircuit(
     }
     cursorY = snapGrid(cursorY + bbMaxH + ZONE_GAP_Y);
 
-    // Place MCU at bottom-left, outputs/inputs to its right
+    // Place MCU(s) at bottom-left, outputs/inputs to their right
     let bottomStartX = ORIGIN_X;
-    if (mcuPart && mcuManifest) {
-      const { w } = getEffectiveSize(mcuPart, mcuManifest);
-      placed.set(mcuPart.id, placeAtVisualBox(mcuPart, mcuManifest, ORIGIN_X, cursorY));
-      bottomStartX = snapGrid(ORIGIN_X + w + ZONE_GAP_X);
+    for (const mp of mcuParts) {
+      const mm = manifests.get(mp.type);
+      if (!mm) continue;
+      const { w } = getEffectiveSize(mp, mm);
+      placed.set(mp.id, placeAtVisualBox(mp, mm, bottomStartX, cursorY));
+      bottomStartX = snapGrid(bottomStartX + w + ZONE_GAP_X);
     }
 
     if (bottomChains.length > 0) {
-      const bottomRows = packChainsIntoRows(bottomChains, manifests, 480, ITEM_GAP_X, CHAIN_GAP_X);
+      const bottomRows = packChainsIntoRows(bottomChains, manifests, 560, ITEM_GAP_X, CHAIN_GAP_X);
       placeRowsAt(bottomRows, bottomStartX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
     }
   } else if (mcuPart && mcuManifest) {
-    // MCU-left layout: MCU anchored left; peripherals grouped into top/bottom bands by MCU pin affinity
+    // Universal Header-Facing Layout:
+    // Top-header parts sit in an aligned horizontal row ABOVE the MCU,
+    // Bottom-header parts sit in an aligned horizontal row BELOW the MCU,
+    // Power supplies & left-header parts sit to the LEFT, right-header & extra MCUs sit to the RIGHT.
     const mcuSize = getEffectiveSize(mcuPart, mcuManifest);
-    const mcuMidY = mcuManifest.height / 2;
 
     const topChains: PartInstance[][] = [];
     const bottomChains: PartInstance[][] = [];
-    const neutralChains: PartInstance[][] = [];
+    const rightChains: PartInstance[][] = [];
+    const leftChains: PartInstance[][] = [];
 
     for (const chain of chains) {
       const sc = chainScore(chain);
       if (sc.hasAffinity) {
-        if (sc.avgY <= mcuMidY) topChains.push(chain);
-        else bottomChains.push(chain);
+        if (sc.zone === 'top') topChains.push(chain);
+        else if (sc.zone === 'bottom') bottomChains.push(chain);
+        else if (sc.zone === 'right') rightChains.push(chain);
+        else leftChains.push(chain);
+      } else if (sc.isPowerChain) {
+        leftChains.push(chain);
       } else {
-        neutralChains.push(chain);
+        rightChains.push(chain);
       }
     }
 
-    // Sort top/bottom chains by pin X (pins closer to right side of MCU placed closer to MCU)
-    topChains.sort((a, b) => chainScore(b).avgX - chainScore(a).avgX);
-    bottomChains.sort((a, b) => chainScore(b).avgX - chainScore(a).avgX);
-    neutralChains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
+    // Order top & bottom strictly left-to-right matching MCU header pins for zero-crossing fan-out
+    topChains.sort((a, b) => chainScore(a).avgX - chainScore(b).avgX || chainScore(a).firstCat - chainScore(b).firstCat);
+    bottomChains.sort((a, b) => chainScore(a).avgX - chainScore(b).avgX || chainScore(a).firstCat - chainScore(b).firstCat);
+    rightChains.sort((a, b) => chainScore(a).avgY - chainScore(b).avgY || chainScore(a).firstCat - chainScore(b).firstCat);
+    leftChains.sort((a, b) => chainScore(a).avgY - chainScore(b).avgY || chainScore(a).firstCat - chainScore(b).firstCat);
 
-    for (const chain of neutralChains) {
-      if (topChains.length <= bottomChains.length) topChains.push(chain);
-      else bottomChains.push(chain);
-    }
+    // Auto-orient axial passives inside top/bottom vertical stacks
+    const orientedTop = topChains.map((c) =>
+      shouldStackVertically(c) ? orientVerticalChain(c, 'up', wires) : c
+    );
+    const orientedBottom = bottomChains.map((c) =>
+      shouldStackVertically(c) ? orientVerticalChain(c, 'down', wires) : c
+    );
 
-    const rightX = snapGrid(ORIGIN_X + mcuSize.w + ZONE_GAP_X);
-    const maxRowW = 500;
-    const topRows = packChainsIntoRows(topChains, manifests, maxRowW, ITEM_GAP_X, CHAIN_GAP_X);
-    const bottomRows = packChainsIntoRows(bottomChains, manifests, maxRowW, ITEM_GAP_X, CHAIN_GAP_X);
+    const maxHeaderRowW = 1100;
+    const topRows = packHeaderChainsIntoRows(orientedTop, manifests, maxHeaderRowW, ITEM_GAP_X, CHAIN_GAP_X, STACK_GAP_Y);
+    const bottomRows = packHeaderChainsIntoRows(orientedBottom, manifests, maxHeaderRowW, ITEM_GAP_X, CHAIN_GAP_X, STACK_GAP_Y);
+    const leftRows = packChainsIntoRows(leftChains, manifests, 260, ITEM_GAP_X, CHAIN_GAP_X);
+    const rightRows = packChainsIntoRows(rightChains, manifests, 480, ITEM_GAP_X, CHAIN_GAP_X);
+
+    const topMaxW = topRows.reduce((m, r) => Math.max(m, r.width), 0);
+    const bottomMaxW = bottomRows.reduce((m, r) => Math.max(m, r.width), 0);
+    const leftMaxW = leftRows.reduce((m, r) => Math.max(m, r.width), 0);
+
+    const centerStartX = leftRows.length > 0 ? snapGrid(ORIGIN_X + leftMaxW + ZONE_GAP_X) : ORIGIN_X;
+    const bandWidth = Math.max(mcuSize.w, topMaxW, bottomMaxW);
+    const bandCenterX = snapGrid(centerStartX + bandWidth / 2);
+
+    const topCorridorY =
+      topRows.length > 0 ? snapGrid(Math.max(84, 48 + Math.min(topChains.length, 14) * 14)) : 0;
+    const bottomCorridorY =
+      bottomRows.length > 0 ? snapGrid(Math.max(84, 48 + Math.min(bottomChains.length, 14) * 14)) : 0;
 
     let cursorY = ORIGIN_Y;
-    const topRes = placeRowsAt(topRows, rightX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
-    if (topRows.length > 0 && bottomRows.length > 0) {
-      cursorY = snapGrid(topRes.bottomY + ZONE_GAP_Y);
-    } else if (topRows.length > 0) {
-      cursorY = topRes.bottomY;
+    let centerMaxRightX = centerStartX + mcuSize.w;
+
+    if (topRows.length > 0) {
+      const topRes = placeHeaderRows(
+        topRows,
+        bandCenterX,
+        cursorY,
+        'up',
+        ROW_GAP_Y,
+        ITEM_GAP_X,
+        CHAIN_GAP_X,
+        STACK_GAP_Y,
+        wires,
+        manifests,
+        placed,
+        centerStartX
+      );
+      centerMaxRightX = Math.max(centerMaxRightX, topRes.maxRightX);
+      cursorY = snapGrid(topRes.bottomY + topCorridorY);
     }
 
-    const bottomRes = placeRowsAt(bottomRows, rightX, cursorY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
-    const totalRightBottom = Math.max(topRes.bottomY, bottomRes.bottomY);
-    const totalRightH = Math.max(mcuSize.h, totalRightBottom - ORIGIN_Y);
-    const mcuY = Math.max(ORIGIN_Y, snapGrid(ORIGIN_Y + (totalRightH - mcuSize.h) / 2));
+    // Center MCU horizontally under the top header band (aligned with top & bottom rows)
+    const mcuX = Math.max(centerStartX, snapGrid(bandCenterX - mcuSize.w / 2));
+    const mcuY = cursorY;
+    placed.set(mcuPart.id, placeAtVisualBox(mcuPart, mcuManifest, mcuX, mcuY));
+    centerMaxRightX = Math.max(centerMaxRightX, mcuX + mcuSize.w);
 
-    placed.set(mcuPart.id, placeAtVisualBox(mcuPart, mcuManifest, ORIGIN_X, mcuY));
+    if (bottomRows.length > 0) {
+      const botStartY = snapGrid(mcuY + mcuSize.h + bottomCorridorY);
+      const botRes = placeHeaderRows(
+        bottomRows,
+        bandCenterX,
+        botStartY,
+        'down',
+        ROW_GAP_Y,
+        ITEM_GAP_X,
+        CHAIN_GAP_X,
+        STACK_GAP_Y,
+        wires,
+        manifests,
+        placed,
+        centerStartX
+      );
+      centerMaxRightX = Math.max(centerMaxRightX, botRes.maxRightX);
+    }
+
+    if (leftRows.length > 0) {
+      const leftTotalH =
+        leftRows.reduce((acc, r) => acc + r.height, 0) + Math.max(0, leftRows.length - 1) * ROW_GAP_Y;
+      const leftY = Math.max(ORIGIN_Y, snapGrid(mcuY + (mcuSize.h - leftTotalH) / 2));
+      placeRowsAt(leftRows, ORIGIN_X, leftY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+    }
+
+    let rightCursorX = snapGrid(centerMaxRightX + ZONE_GAP_X);
+    if (rightRows.length > 0) {
+      const rightTotalH =
+        rightRows.reduce((acc, r) => acc + r.height, 0) + Math.max(0, rightRows.length - 1) * ROW_GAP_Y;
+      const rightY = Math.max(ORIGIN_Y, snapGrid(mcuY + (mcuSize.h - rightTotalH) / 2));
+      const rightRes = placeRowsAt(rightRows, rightCursorX, rightY, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
+      rightCursorX = snapGrid(rightRes.maxRightX + ZONE_GAP_X);
+    }
+
+    for (const extra of extraMcus) {
+      const em = manifests.get(extra.type);
+      if (!em) continue;
+      const sz = getEffectiveSize(extra, em);
+      placed.set(extra.id, placeAtVisualBox(extra, em, rightCursorX, mcuY));
+      rightCursorX = snapGrid(rightCursorX + sz.w + ZONE_GAP_X);
+    }
   } else {
     // No MCU and no breadboard: tidy grid layout
     chains.sort((a, b) => chainScore(a).firstCat - chainScore(b).firstCat);
-    const rows = packChainsIntoRows(chains, manifests, 560, ITEM_GAP_X, CHAIN_GAP_X);
+    const rows = packChainsIntoRows(chains, manifests, 640, ITEM_GAP_X, CHAIN_GAP_X);
     placeRowsAt(rows, ORIGIN_X, ORIGIN_Y, ROW_GAP_Y, ITEM_GAP_X, CHAIN_GAP_X, manifests, placed);
   }
 

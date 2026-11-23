@@ -103,12 +103,12 @@ export function autoWireFromSketch(
     }
   }
   const scalarDeclRe =
-    /\b(?:const\s+)?(?:static\s+)?(?:unsigned\s+)?(?:int|byte|uint8_t|short|long|char)\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z0-9_]+)\s*;/g;
+    /\b(?:(?:const(?:expr)?|static|unsigned)\s+)*(?:int|byte|uint8_t|short|long|char)\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z0-9_]+)\s*;/g;
   for (const m of code.matchAll(scalarDeclRe)) {
     symValues.set(m[1], m[2]);
   }
   const arrayDeclRe =
-    /\b(?:const\s+)?(?:static\s+)?(?:unsigned\s+)?(?:int|byte|uint8_t|char)\s+([A-Za-z_]\w*)\s*\[[^\]]*\]\s*=\s*\{([^}]+)\}/g;
+    /\b(?:(?:const(?:expr)?|static|unsigned)\s+)*(?:int|byte|uint8_t|char)\s+([A-Za-z_]\w*)\s*\[[^\]]*\]\s*=\s*\{([^}]+)\}/g;
   for (const m of code.matchAll(arrayDeclRe)) {
     symArrays.set(
       m[1],
@@ -145,6 +145,34 @@ export function autoWireFromSketch(
     return candidate;
   };
 
+  /** Resolves a scalar pin expression or an indexed pin array (`LED_PINS[i]` / `LED_PINS[0]`). */
+  const resolvePins = (expr: string | undefined): string[] => {
+    if (!expr) return [];
+    const cleaned = expr.trim().replace(/^\((.*)\)$/, '$1').trim();
+    const arrMatch = cleaned.match(/^([A-Za-z_]\w*)\s*\[([^\]]+)\]$/);
+    if (arrMatch) {
+      const arrName = arrMatch[1];
+      const arr = symArrays.get(arrName);
+      if (arr) {
+        const idx = parseHexOrInt(arrMatch[2]);
+        const items = idx !== null && idx >= 0 && idx < arr.length ? [arr[idx]] : arr;
+        const pins: string[] = [];
+        for (const item of items) {
+          const p = resolvePin(item);
+          if (!p) continue;
+          const prev = pinVarHints.get(p) ?? '';
+          if (!prev.includes(arrName)) {
+            pinVarHints.set(p, prev ? `${prev} ${arrName}` : arrName);
+          }
+          if (!pins.includes(p)) pins.push(p);
+        }
+        return pins;
+      }
+    }
+    const single = resolvePin(cleaned);
+    return single ? [single] : [];
+  };
+
   // Seed variable-name hints from all known pin symbols
   for (const [sym] of symValues) {
     resolvePin(sym);
@@ -159,8 +187,8 @@ export function autoWireFromSketch(
   const claimedPartIds = new Set<string>([mcuPart.id]);
   const claimedMcuPins = new Set<string>();
   const pendingLinks: Array<{ from: PinRef; to: PinRef }> = [];
+  const railReqs: Array<{ partId: string; pinId: string; rail: 'gnd' | '5v' | '3v3' }> = [];
   let addedParts = 0;
-  let gndCursor = 0;
 
   const nextId = (prefix: string): string => {
     const clean = prefix.replace(/[^a-z]/g, '').slice(0, 3) || 'p';
@@ -199,13 +227,6 @@ export function autoWireFromSketch(
     return created;
   };
 
-  const nextGndPin = (): string | null => {
-    if (gndPins.length === 0) return null;
-    const pin = gndPins[gndCursor % gndPins.length];
-    gndCursor++;
-    return pin;
-  };
-
   const link = (fromPartId: string, fromPinId: string, toPartId: string, toPinId: string) => {
     if (fromPartId === toPartId && fromPinId === toPinId) return;
     const dup = pendingLinks.some(
@@ -233,11 +254,18 @@ export function autoWireFromSketch(
     link(mcuPart.id, mcuPinId, partId, partPinId);
   };
 
+  const requestRail = (partId: string, pinId: string, rail: 'gnd' | '5v' | '3v3') => {
+    if (rail === 'gnd' && gndPins.length === 0) return;
+    if (rail === '5v' && !v5Pin) return;
+    if (rail === '3v3' && !v33Pin) return;
+    if (!railReqs.some((r) => r.partId === partId && r.pinId === pinId && r.rail === rail)) {
+      railReqs.push({ partId, pinId, rail });
+    }
+  };
+
   const linkPower = (partId: string, vccPin = 'VCC', gndPin = 'GND', use3v3 = false) => {
-    const rail = use3v3 ? v33Pin : v5Pin;
-    if (rail && vccPin) link(mcuPart.id, rail, partId, vccPin);
-    const gnd = nextGndPin();
-    if (gnd && gndPin) link(mcuPart.id, gnd, partId, gndPin);
+    if (vccPin) requestRail(partId, vccPin, use3v3 ? '3v3' : '5v');
+    if (gndPin) requestRail(partId, gndPin, 'gnd');
   };
 
   const usesHardwareSerial = /\bSerial\.begin\s*\(/.test(code);
@@ -340,10 +368,10 @@ export function autoWireFromSketch(
     servoVars.add(m[1]);
   }
   for (const varName of servoVars) {
-    const attachRe = new RegExp(`\\b${varName}\\.attach\\s*\\(([^)]*)\\)`, 'g');
+    const attachRe = new RegExp(`\\b${varName}(?:\\s*\\[[^\\]]*\\])?\\.attach\\s*\\(([^)]*)\\)`, 'g');
     for (const m of code.matchAll(attachRe)) {
-      const pin = resolvePin(splitTopLevelArgs(m[1])[0]);
-      if (pin) {
+      for (const pin of resolvePins(splitTopLevelArgs(m[1])[0])) {
+        if (claimedMcuPins.has(pin)) continue;
         const part = ensurePart('servo');
         if (part) {
           linkPower(part.id);
@@ -453,13 +481,13 @@ export function autoWireFromSketch(
 
   // 3n. Buzzer via tone()
   for (const m of code.matchAll(/\btone\s*\(\s*([^,)]+)/g)) {
-    const pin = resolvePin(m[1]);
-    if (pin && !claimedMcuPins.has(pin)) {
-      const part = ensurePart('buzzer');
-      if (part) {
-        linkMcu(pin, part.id, '+');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, part.id, '-');
+    for (const pin of resolvePins(m[1])) {
+      if (!claimedMcuPins.has(pin)) {
+        const part = ensurePart('buzzer');
+        if (part) {
+          linkMcu(pin, part.id, '+');
+          requestRail(part.id, '-', 'gnd');
+        }
       }
     }
   }
@@ -470,22 +498,26 @@ export function autoWireFromSketch(
   const analogPins = new Set<string>();
 
   for (const m of code.matchAll(/\bpinMode\s*\(\s*([^,)]+)\s*,\s*(OUTPUT|INPUT_PULLUP|INPUT)\s*\)/g)) {
-    const p = resolvePin(m[1]);
-    if (!p || claimedMcuPins.has(p)) continue;
-    if (m[2] === 'OUTPUT') outputPins.add(p);
-    else inputPins.add(p);
+    for (const p of resolvePins(m[1])) {
+      if (claimedMcuPins.has(p)) continue;
+      if (m[2] === 'OUTPUT') outputPins.add(p);
+      else inputPins.add(p);
+    }
   }
   for (const m of code.matchAll(/\b(?:digitalWrite|analogWrite)\s*\(\s*([^,)]+)/g)) {
-    const p = resolvePin(m[1]);
-    if (p && !claimedMcuPins.has(p) && !inputPins.has(p)) outputPins.add(p);
+    for (const p of resolvePins(m[1])) {
+      if (!claimedMcuPins.has(p) && !inputPins.has(p)) outputPins.add(p);
+    }
   }
   for (const m of code.matchAll(/\bdigitalRead\s*\(\s*([^)]+)\)/g)) {
-    const p = resolvePin(m[1]);
-    if (p && !claimedMcuPins.has(p) && !outputPins.has(p)) inputPins.add(p);
+    for (const p of resolvePins(m[1])) {
+      if (!claimedMcuPins.has(p) && !outputPins.has(p)) inputPins.add(p);
+    }
   }
   for (const m of code.matchAll(/\banalogRead\s*\(\s*([^)]+)\)/g)) {
-    const p = resolvePin(m[1]);
-    if (p && !claimedMcuPins.has(p)) analogPins.add(p);
+    for (const p of resolvePins(m[1])) {
+      if (!claimedMcuPins.has(p)) analogPins.add(p);
+    }
   }
 
   if (usesHardwareSerial) {
@@ -517,8 +549,7 @@ export function autoWireFromSketch(
       if (in3Pin) linkMcu(in3Pin, drv.id, 'IN3');
       if (in4Pin) linkMcu(in4Pin, drv.id, 'IN4');
       if (enbPin) linkMcu(enbPin, drv.id, 'ENB');
-      const gnd = nextGndPin();
-      if (gnd) link(mcuPart.id, gnd, drv.id, 'GND');
+      requestRail(drv.id, 'GND', 'gnd');
       const motorA = ensurePart('dc-motor');
       if (motorA) {
         link(drv.id, 'OUT1', motorA.id, '+');
@@ -544,8 +575,7 @@ export function autoWireFromSketch(
       linkMcu(rPin, rgb.id, 'R');
       linkMcu(gPin, rgb.id, 'G');
       linkMcu(bPin, rgb.id, 'B');
-      const gnd = nextGndPin();
-      if (gnd) link(mcuPart.id, gnd, rgb.id, 'COM');
+      requestRail(rgb.id, 'COM', 'gnd');
     }
   }
 
@@ -573,11 +603,10 @@ export function autoWireFromSketch(
       const ldr = ensurePart('ldr');
       const res = ensurePart('resistor', { value: 10, unit: 'kohm' });
       if (ldr && res) {
-        if (v5Pin) link(mcuPart.id, v5Pin, ldr.id, '1');
+        requestRail(ldr.id, '1', '5v');
         linkMcu(p, ldr.id, '2');
         link(ldr.id, '2', res.id, '1');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, res.id, '2');
+        requestRail(res.id, '2', 'gnd');
       }
     } else {
       const pot = ensurePart('potentiometer');
@@ -610,9 +639,10 @@ export function autoWireFromSketch(
     } else {
       const btn = ensurePart('pushbutton');
       if (btn) {
-        linkMcu(p, btn.id, '1a');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, btn.id, '2a');
+        const btnManifest = manifests.get('pushbutton');
+        const hasBottomLegs = btnManifest?.pins.some((pin) => pin.id === '1b') ?? false;
+        linkMcu(p, btn.id, hasBottomLegs ? '1b' : '1a');
+        requestRail(btn.id, hasBottomLegs ? '2b' : '2a', 'gnd');
       }
     }
   }
@@ -631,15 +661,13 @@ export function autoWireFromSketch(
       const part = ensurePart('buzzer');
       if (part) {
         linkMcu(p, part.id, '+');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, part.id, '-');
+        requestRail(part.id, '-', 'gnd');
       }
     } else if (/motor/i.test(hint)) {
       const part = ensurePart('dc-motor');
       if (part) {
         linkMcu(p, part.id, '+');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, part.id, '-');
+        requestRail(part.id, '-', 'gnd');
       }
     } else {
       const ledColor: LedColor = /green|hijau/i.test(hint)
@@ -656,8 +684,7 @@ export function autoWireFromSketch(
       if (res && led) {
         linkMcu(p, res.id, '1');
         link(res.id, '2', led.id, 'A');
-        const gnd = nextGndPin();
-        if (gnd) link(mcuPart.id, gnd, led.id, 'C');
+        requestRail(led.id, 'C', 'gnd');
       }
     }
   }
@@ -666,10 +693,129 @@ export function autoWireFromSketch(
     return { parts: existingParts, wires: existingWires, addedParts: 0, addedWires: 0 };
   }
 
-  // 5. Preserve wires outside the auto-wired subgraph (keeps inter-MCU links & manual power wiring intact)
-  const preservedWires = existingWires.filter(
-    (w) => !(claimedPartIds.has(w.from.partId) && claimedPartIds.has(w.to.partId))
-  );
+  // 4f. Wire common GND / 5V / 3.3V buses per header zone so aligned parts share one clean rail
+  const pinMetaById = new Map(mcuManifest.pins.map((p) => [p.id, p]));
+  const inferZone = (pinId: string): 'top' | 'bottom' | 'right' | 'left' => {
+    const p = pinMetaById.get(pinId);
+    if (!p) return 'top';
+    if (p.exitDir === 'up') return 'top';
+    if (p.exitDir === 'down') return 'bottom';
+    if (p.exitDir === 'right') return 'right';
+    if (p.exitDir === 'left') return 'left';
+    if (p.y <= mcuManifest.height * 0.25) return 'top';
+    if (p.y >= mcuManifest.height * 0.75) return 'bottom';
+    if (p.x >= mcuManifest.width * 0.75) return 'right';
+    if (p.x <= mcuManifest.width * 0.25) return 'left';
+    return p.y <= mcuManifest.height / 2 ? 'top' : 'bottom';
+  };
+
+  // Propagate MCU signal pin position across peripheral signal chains (e.g. MCU -> Resistor -> LED)
+  const sigAdj = new Map<string, Set<string>>();
+  const partSigAnchor = new Map<string, { zone: 'top' | 'bottom' | 'right' | 'left'; x: number; y: number }>();
+  for (const l of pendingLinks) {
+    if (l.from.partId === mcuPart.id && l.to.partId !== mcuPart.id) {
+      const mp = pinMetaById.get(l.from.pinId);
+      if (mp && !partSigAnchor.has(l.to.partId)) {
+        partSigAnchor.set(l.to.partId, { zone: inferZone(mp.id), x: mp.x, y: mp.y });
+      }
+    } else if (l.to.partId === mcuPart.id && l.from.partId !== mcuPart.id) {
+      const mp = pinMetaById.get(l.to.pinId);
+      if (mp && !partSigAnchor.has(l.from.partId)) {
+        partSigAnchor.set(l.from.partId, { zone: inferZone(mp.id), x: mp.x, y: mp.y });
+      }
+    } else if (l.from.partId !== mcuPart.id && l.to.partId !== mcuPart.id) {
+      if (!sigAdj.has(l.from.partId)) sigAdj.set(l.from.partId, new Set());
+      if (!sigAdj.has(l.to.partId)) sigAdj.set(l.to.partId, new Set());
+      sigAdj.get(l.from.partId)!.add(l.to.partId);
+      sigAdj.get(l.to.partId)!.add(l.from.partId);
+    }
+  }
+  const bfsQueue = Array.from(partSigAnchor.keys());
+  while (bfsQueue.length > 0) {
+    const curr = bfsQueue.shift()!;
+    const anchor = partSigAnchor.get(curr)!;
+    for (const nb of sigAdj.get(curr) ?? []) {
+      if (!partSigAnchor.has(nb)) {
+        partSigAnchor.set(nb, anchor);
+        bfsQueue.push(nb);
+      }
+    }
+  }
+
+  const railGroups = new Map<
+    string,
+    Array<{ partId: string; pinId: string; rail: 'gnd' | '5v' | '3v3'; zone: 'top' | 'bottom' | 'right' | 'left'; x: number; y: number }>
+  >();
+  for (const req of railReqs) {
+    const anchor = partSigAnchor.get(req.partId) ?? { zone: 'top' as const, x: mcuManifest.width / 2, y: 0 };
+    const key = `${req.rail}:${anchor.zone}`;
+    if (!railGroups.has(key)) railGroups.set(key, []);
+    railGroups.get(key)!.push({ ...req, ...anchor });
+  }
+
+  const pickClosestRailPin = (
+    rail: 'gnd' | '5v' | '3v3',
+    target: { zone: 'top' | 'bottom' | 'right' | 'left'; x: number; y: number }
+  ): string | null => {
+    const candidates =
+      rail === 'gnd' ? gndPins : rail === '5v' ? (v5Pin ? [v5Pin] : []) : v33Pin ? [v33Pin] : [];
+    if (candidates.length === 0) return null;
+    let bestPin = candidates[0];
+    let bestScore = Infinity;
+    for (const cid of candidates) {
+      const mp = pinMetaById.get(cid);
+      if (!mp) continue;
+      const sameZoneBonus = inferZone(cid) === target.zone ? 0 : 250;
+      const dist = Math.abs(mp.x - target.x) + Math.abs(mp.y - target.y) + sameZoneBonus;
+      if (dist < bestScore) {
+        bestScore = dist;
+        bestPin = cid;
+      }
+    }
+    return bestPin;
+  };
+
+  for (const group of railGroups.values()) {
+    const zone = group[0].zone;
+    const rail = group[0].rail;
+    group.sort((a, b) => (zone === 'top' || zone === 'bottom' ? a.x - b.x : a.y - b.y));
+    const firstPin = pickClosestRailPin(rail, group[0]);
+    const lastPin = pickClosestRailPin(rail, group[group.length - 1]);
+    if (!firstPin) continue;
+
+    // Pick whichever end of the aligned row sits closer to an MCU rail pin, then daisy-chain outward
+    const firstMp = pinMetaById.get(firstPin)!;
+    const lastMp = lastPin ? pinMetaById.get(lastPin)! : firstMp;
+    const firstDist =
+      Math.abs(firstMp.x - group[0].x) +
+      Math.abs(firstMp.y - group[0].y) +
+      (inferZone(firstPin) === zone ? 0 : 250);
+    const lastDist =
+      Math.abs(lastMp.x - group[group.length - 1].x) +
+      Math.abs(lastMp.y - group[group.length - 1].y) +
+      (lastPin && inferZone(lastPin) === zone ? 0 : 250);
+
+    if (firstDist <= lastDist) {
+      link(mcuPart.id, firstPin, group[0].partId, group[0].pinId);
+      for (let i = 1; i < group.length; i++) {
+        link(group[i - 1].partId, group[i - 1].pinId, group[i].partId, group[i].pinId);
+      }
+    } else {
+      link(mcuPart.id, lastPin ?? firstPin, group[group.length - 1].partId, group[group.length - 1].pinId);
+      for (let i = group.length - 2; i >= 0; i--) {
+        link(group[i + 1].partId, group[i + 1].pinId, group[i].partId, group[i].pinId);
+      }
+    }
+  }
+
+  // 5. Preserve wires outside the auto-wired subgraph (keeps inter-MCU links & manual power wiring intact,
+  //    while replacing any stale wire attached to an MCU pin newly claimed by this sketch)
+  const preservedWires = existingWires.filter((w) => {
+    if (claimedPartIds.has(w.from.partId) && claimedPartIds.has(w.to.partId)) return false;
+    if (w.from.partId === mcuPart.id && claimedMcuPins.has(w.from.pinId)) return false;
+    if (w.to.partId === mcuPart.id && claimedMcuPins.has(w.to.pinId)) return false;
+    return true;
+  });
   const usedWireIds = new Set(preservedWires.map((w) => w.id));
   const nextWireId = (): string => {
     for (let i = 1; i < 9999; i++) {

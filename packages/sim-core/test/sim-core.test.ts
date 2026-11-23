@@ -894,3 +894,121 @@ test('autoWireFromSketch auto-adds detected components, wires pins accurately, a
   assert.ok(res.wires.some((w) => w.from.pinId === '9' && w.to.partId === servo.id && w.to.pinId === 'SIG'));
   assert.ok(res.wires.some((w) => w.from.pinId === '2' && w.to.partId === dht!.id && w.to.pinId === 'DATA'));
 });
+
+test('autoWireFromSketch aligns array-loop LEDs & multi-zone inputs in pin order with common GND/5V rails', () => {
+  const m = new Map<string, PartManifest>(testManifests);
+  const unoPins: PartManifest['pins'] = [
+    { id: '5V', label: '5V', x: 134, y: 182, type: 'power', exitDir: 'down', fixedVoltage: 5.0 },
+    { id: 'GND.1', label: 'GND', x: 86, y: 14, type: 'gnd', exitDir: 'up', fixedVoltage: 0 },
+    { id: 'GND.2', label: 'GND', x: 146, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+    { id: 'GND.3', label: 'GND', x: 158, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+  ];
+  for (let pin = 2; pin <= 11; pin++) {
+    unoPins.push({ id: String(pin), label: `D${pin}`, x: 236 - (pin - 2) * 12, y: 14, type: 'digital', exitDir: 'up' });
+  }
+  for (let a = 0; a <= 3; a++) {
+    unoPins.push({ id: `A${a}`, label: `A${a}`, x: 200 + a * 12, y: 182, type: 'analog', exitDir: 'down' });
+  }
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Arduino Uno', en: 'Arduino Uno' },
+    defaultProps: {},
+    pins: unoPins,
+  });
+  m.set('potentiometer', {
+    type: 'potentiometer',
+    category: 'input',
+    width: 64,
+    height: 68,
+    name: { id: 'Pot', en: 'Pot' },
+    defaultProps: { value: 10, unit: 'kohm', position: 0.5 },
+    pins: [
+      { id: 'GND', label: 'GND', x: 20, y: 64, type: 'gnd', exitDir: 'down' },
+      { id: 'SIG', label: 'SIG', x: 32, y: 64, type: 'analog', exitDir: 'down' },
+      { id: 'VCC', label: 'VCC', x: 44, y: 64, type: 'power', exitDir: 'down' },
+    ],
+  });
+
+  // 1. 10-LED Water Wave with indexed array loop (LED_PINS[i])
+  const waveSketch = `
+    const int LED_PINS[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    const int jumlahLED = 10;
+    void setup() {
+      for (int i = 0; i < jumlahLED; i++) pinMode(LED_PINS[i], OUTPUT);
+      Serial.begin(9600);
+    }
+    void loop() {
+      for (int i = 0; i < jumlahLED; i++) {
+        digitalWrite(LED_PINS[i], HIGH);
+        delay(100);
+        digitalWrite(LED_PINS[i], LOW);
+      }
+    }
+  `;
+  const mcu: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+  const res = autoWireFromSketch(waveSketch, mcu, [mcu], [], m);
+  const leds = res.parts.filter((p) => p.type === 'led');
+  const resistors = res.parts.filter((p) => p.type === 'resistor');
+  const uno = res.parts.find((p) => p.id === 'uno1')!;
+  assert.equal(leds.length, 10);
+  assert.equal(resistors.length, 10);
+
+  // All 10 LEDs must sit in ONE horizontal row above Uno
+  const uniqueLedY = new Set(leds.map((l) => l.y));
+  assert.equal(uniqueLedY.size, 1, `Expected all 10 LEDs aligned on 1 row, got Ys: ${[...uniqueLedY]}`);
+  assert.ok(leds[0].y < uno.y, 'Top-header LEDs should sit above the MCU');
+
+  // Verify visual left-to-right order matches Uno physical pin order (D11 leftmost -> D2 rightmost)
+  const pinToLedX = new Map<number, number>();
+  for (const w of res.wires) {
+    if (w.from.partId === 'uno1' && /^\d+$/.test(w.from.pinId)) {
+      const rId = w.to.partId;
+      const rToLed = res.wires.find((rw) => rw.from.partId === rId && rw.to.partId !== 'uno1');
+      if (rToLed) {
+        const ledPart = leds.find((l) => l.id === rToLed.to.partId)!;
+        pinToLedX.set(Number(w.from.pinId), ledPart.x);
+      }
+    }
+  }
+  assert.equal(pinToLedX.size, 10);
+  for (let pin = 11; pin > 2; pin--) {
+    assert.ok(
+      pinToLedX.get(pin)! < pinToLedX.get(pin - 1)!,
+      `Expected D${pin} LED (x=${pinToLedX.get(pin)}) left of D${pin - 1} LED (x=${pinToLedX.get(pin - 1)})`
+    );
+  }
+
+  // Common GND bus: only 1 wire taps MCU GND, yet ALL 10 LEDs share Uno GND net electrically
+  const mcuGndWires = res.wires.filter(
+    (w) => (w.from.partId === 'uno1' && w.from.pinId.startsWith('GND')) || (w.to.partId === 'uno1' && w.to.pinId.startsWith('GND'))
+  );
+  assert.equal(mcuGndWires.length, 1, `Expected 1 common GND tap to MCU, got ${mcuGndWires.length}`);
+  const net = buildNetlist(res.parts, res.wires, m);
+  const unoGndNet = net.pinToNet.get('uno1:GND.1');
+  for (const l of leds) {
+    assert.equal(net.pinToNet.get(`${l.id}:C`), unoGndNet, `${l.id}:C must be on Uno GND net`);
+  }
+
+  // 2. Multi-zone analog array (4 pots on A0..A3) sits cleanly in 1 row BELOW Uno with common GND & 5V rails
+  const potSketch = `
+    const int POTS[] = {A0, A1, A2, A3};
+    void setup() {}
+    void loop() {
+      for (int i = 0; i < 4; i++) analogRead(POTS[i]);
+    }
+  `;
+  const potRes = autoWireFromSketch(potSketch, mcu, [mcu], [], m);
+  const pots = potRes.parts.filter((p) => p.type === 'potentiometer');
+  const potUno = potRes.parts.find((p) => p.id === 'uno1')!;
+  assert.equal(pots.length, 4);
+  assert.equal(new Set(pots.map((p) => p.y)).size, 1, 'All 4 pots should align horizontally in 1 row');
+  assert.ok(pots[0].y > potUno.y + 196, 'Bottom-header analog pots should sit below the MCU');
+  const potNet = buildNetlist(potRes.parts, potRes.wires, m);
+  for (const p of pots) {
+    assert.equal(potNet.pinToNet.get(`${p.id}:GND`), potNet.pinToNet.get('uno1:GND.2'));
+    assert.equal(potNet.pinToNet.get(`${p.id}:VCC`), potNet.pinToNet.get('uno1:5V'));
+  }
+});
