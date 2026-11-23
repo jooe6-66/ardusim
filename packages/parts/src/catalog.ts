@@ -565,6 +565,102 @@ export const PART_CATALOG: PartManifest[] = [
       { id: 'RXD', label: 'RXD', x: 66, y: 68, type: 'uart', exitDir: 'down' },
     ],
   },
+  // --- POWER SOURCES, CONVERTERS & MOTOR DRIVERS ---
+  {
+    type: 'l298n',
+    category: 'motor',
+    width: 132,
+    height: 124,
+    name: { id: 'Driver Motor L298N', en: 'L298N Motor Driver' },
+    description: {
+      id: 'Driver dual H-bridge untuk 2 motor DC atau stepper (ENA/IN1-IN4/ENB, 12V/5V)',
+      en: 'Dual H-bridge motor driver for 2 DC motors or stepper (ENA/IN1-IN4/ENB, 12V/5V)',
+    },
+    defaultProps: { reg5vEnabled: true },
+    pins: [
+      { id: 'OUT1', label: 'OUT1', x: 6, y: 36, type: 'passive', exitDir: 'left' },
+      { id: 'OUT2', label: 'OUT2', x: 6, y: 56, type: 'passive', exitDir: 'left' },
+      { id: 'OUT3', label: 'OUT3', x: 126, y: 36, type: 'passive', exitDir: 'right' },
+      { id: 'OUT4', label: 'OUT4', x: 126, y: 56, type: 'passive', exitDir: 'right' },
+      { id: '12V', label: '12V', x: 16, y: 118, type: 'power', exitDir: 'down' },
+      { id: 'GND', label: 'GND', x: 28, y: 118, type: 'gnd', exitDir: 'down' },
+      { id: '5V', label: '5V', x: 40, y: 118, type: 'power', exitDir: 'down' },
+      { id: 'ENA', label: 'ENA', x: 58, y: 118, type: 'digital', exitDir: 'down' },
+      { id: 'IN1', label: 'IN1', x: 70, y: 118, type: 'digital', exitDir: 'down' },
+      { id: 'IN2', label: 'IN2', x: 82, y: 118, type: 'digital', exitDir: 'down' },
+      { id: 'IN3', label: 'IN3', x: 94, y: 118, type: 'digital', exitDir: 'down' },
+      { id: 'IN4', label: 'IN4', x: 106, y: 118, type: 'digital', exitDir: 'down' },
+      { id: 'ENB', label: 'ENB', x: 118, y: 118, type: 'digital', exitDir: 'down' },
+    ],
+  },
+  {
+    type: 'buck-lm2596',
+    category: 'power',
+    width: 124,
+    height: 68,
+    name: { id: 'Step-Down LM2596', en: 'LM2596 Step-Down (Buck)' },
+    description: {
+      id: 'Konverter penurun tegangan DC-DC (1.25V-35V, Vout <= Vin)',
+      en: 'Adjustable DC-DC buck step-down converter (1.25V-35V, Vout <= Vin)',
+    },
+    defaultProps: { targetVoltage: 5.0 },
+    pins: [
+      { id: 'IN+', label: 'IN+', x: 6, y: 22, type: 'power', exitDir: 'left' },
+      { id: 'IN-', label: 'IN-', x: 6, y: 46, type: 'gnd', exitDir: 'left' },
+      { id: 'OUT+', label: 'OUT+', x: 118, y: 22, type: 'power', exitDir: 'right' },
+      { id: 'OUT-', label: 'OUT-', x: 118, y: 46, type: 'gnd', exitDir: 'right' },
+    ],
+  },
+  {
+    type: 'boost-mt3608',
+    category: 'power',
+    width: 116,
+    height: 64,
+    name: { id: 'Step-Up MT3608', en: 'MT3608 Step-Up (Boost)' },
+    description: {
+      id: 'Konverter penaik tegangan DC-DC (2.5V-28V, Vout >= Vin)',
+      en: 'Adjustable DC-DC boost step-up converter (2.5V-28V, Vout >= Vin)',
+    },
+    defaultProps: { targetVoltage: 12.0 },
+    pins: [
+      { id: 'IN+', label: 'IN+', x: 6, y: 20, type: 'power', exitDir: 'left' },
+      { id: 'IN-', label: 'IN-', x: 6, y: 44, type: 'gnd', exitDir: 'left' },
+      { id: 'OUT+', label: 'OUT+', x: 110, y: 20, type: 'power', exitDir: 'right' },
+      { id: 'OUT-', label: 'OUT-', x: 110, y: 44, type: 'gnd', exitDir: 'right' },
+    ],
+  },
+  {
+    type: 'battery-18650',
+    category: 'power',
+    width: 116,
+    height: 64,
+    name: { id: 'Baterai 18650', en: '18650 Battery Pack' },
+    description: {
+      id: 'Baterai Li-ion 18650 pilih konfigurasi 1S (3.7V), 2S (7.4V), atau 3S (11.1V)',
+      en: 'Li-ion 18650 battery pack with 1S (3.7V), 2S (7.4V), or 3S (11.1V) series selection',
+    },
+    defaultProps: { cells: 1, voltage: 3.7 },
+    pins: [
+      { id: '+', label: '+', x: 110, y: 20, type: 'power', exitDir: 'right' },
+      { id: '-', label: '-', x: 110, y: 44, type: 'gnd', exitDir: 'right' },
+    ],
+  },
+  {
+    type: 'battery-lipo-3s',
+    category: 'power',
+    width: 124,
+    height: 68,
+    name: { id: 'Baterai LiPo 3S', en: '3S LiPo Battery (11.1V)' },
+    description: {
+      id: 'Baterai LiPo 3S nominal 11.1V (bisa atur tegangan 10.5V-12.6V)',
+      en: '3S LiPo battery pack 11.1V nominal (adjustable 10.5V-12.6V charge state)',
+    },
+    defaultProps: { voltage: 11.1 },
+    pins: [
+      { id: '+', label: '+', x: 118, y: 22, type: 'power', exitDir: 'right' },
+      { id: '-', label: '-', x: 118, y: 46, type: 'gnd', exitDir: 'right' },
+    ],
+  },
 ];
 
 export const PART_MANIFEST_MAP: Map<string, PartManifest> = new Map(

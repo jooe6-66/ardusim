@@ -719,12 +719,13 @@ interface LayoutRowSpec {
 const CATEGORY_ORDER: Record<PartManifest['category'], number> = {
   mcu: 0,
   breadboard: 1,
-  sensor: 2,
-  display: 3,
-  input: 4,
-  passive: 5,
-  output: 6,
-  motor: 7,
+  power: 2,
+  sensor: 3,
+  display: 4,
+  input: 5,
+  passive: 6,
+  output: 7,
+  motor: 8,
 };
 
 const TOP_ZONE_CATEGORIES = new Set<PartManifest['category']>(['sensor', 'display']);

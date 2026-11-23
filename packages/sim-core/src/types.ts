@@ -112,6 +112,19 @@ export interface StepperVisualState {
   angleDeg: number;
 }
 
+export interface PowerConverterVisualState {
+  vin: number;
+  vout: number;
+  active: boolean;
+}
+
+export interface L298NVisualState {
+  vSupply: number;
+  outA: number;
+  outB: number;
+  powered: boolean;
+}
+
 export interface SimWarning {
   partId: string;
   code: 'LED_OVERCURRENT' | 'CAP_REVERSE_POLARITY';
@@ -131,6 +144,8 @@ export interface SimSnapshot {
   buzzerHz: Record<string, number>;
   relayEnergized: Record<string, boolean>;
   motorStates: Record<string, MotorVisualState>;
+  converterStates?: Record<string, PowerConverterVisualState>;
+  l298nStates?: Record<string, L298NVisualState>;
   stepperStates: Record<string, StepperVisualState>;
   lcdDisplays: Record<string, LcdDisplayState>;
   oledDisplays: Record<string, OledDisplayState>;
@@ -159,7 +174,16 @@ export interface NetlistResult {
 
 export interface PartManifest {
   type: string;
-  category: 'mcu' | 'breadboard' | 'passive' | 'input' | 'output' | 'sensor' | 'display' | 'motor';
+  category:
+    | 'mcu'
+    | 'breadboard'
+    | 'power'
+    | 'passive'
+    | 'input'
+    | 'output'
+    | 'sensor'
+    | 'display'
+    | 'motor';
   width: number;
   height: number;
   name: { id: string; en: string };

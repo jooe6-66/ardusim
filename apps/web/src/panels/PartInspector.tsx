@@ -1012,6 +1012,175 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
           </div>
         )}
 
+        {/* --- POWER SOURCES, CONVERTERS & MOTOR DRIVERS --- */}
+        {part.type === 'battery-18650' && (() => {
+          const cells = Math.min(3, Math.max(1, Math.round(Number(part.props.cells ?? 1))));
+          const volts = Number(part.props.voltage ?? Math.round(cells * 3.7 * 10) / 10);
+          const minV = Math.round(cells * 3.0 * 10) / 10;
+          const maxV = Math.round(cells * 4.2 * 10) / 10;
+          return (
+            <>
+              <div className="field-group">
+                <span className="field-label">{t.batteryCellsLabel}</span>
+                <div className="cat-chips">
+                  {[
+                    { c: 1, v: 3.7, label: '1S (3.7V)' },
+                    { c: 2, v: 7.4, label: '2S (7.4V)' },
+                    { c: 3, v: 11.1, label: '3S (11.1V)' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.c}
+                      type="button"
+                      className={`btn btn-compact ${cells === opt.c ? 'btn-active' : ''}`}
+                      aria-pressed={cells === opt.c}
+                      onClick={() => onUpdatePartProps(part.id, { cells: opt.c, voltage: opt.v })}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="field-group">
+                <label className="field-label" htmlFor="bat-18650-v">
+                  {t.batteryVoltageLabel}: {volts.toFixed(1)} V
+                </label>
+                <input
+                  id="bat-18650-v"
+                  type="range"
+                  min={minV}
+                  max={maxV}
+                  step={0.1}
+                  value={Math.min(maxV, Math.max(minV, volts))}
+                  onChange={(e) => onUpdatePartProps(part.id, { voltage: Number(e.target.value) })}
+                />
+              </div>
+            </>
+          );
+        })()}
+
+        {part.type === 'battery-lipo-3s' && (() => {
+          const volts = Number(part.props.voltage ?? 11.1);
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="bat-lipo-v">
+                  {t.batteryVoltageLabel}: {volts.toFixed(1)} V
+                </label>
+                <input
+                  id="bat-lipo-v"
+                  type="range"
+                  min={10.5}
+                  max={12.6}
+                  step={0.1}
+                  value={Math.min(12.6, Math.max(10.5, volts))}
+                  onChange={(e) => onUpdatePartProps(part.id, { voltage: Number(e.target.value) })}
+                />
+              </div>
+              <div className="cat-chips">
+                {[
+                  { v: 11.1, label: '11.1V (Nominal)' },
+                  { v: 11.4, label: '11.4V (Storage)' },
+                  { v: 12.6, label: '12.6V (Full)' },
+                ].map((opt) => (
+                  <button
+                    key={opt.v}
+                    type="button"
+                    className={`btn btn-compact ${Math.abs(volts - opt.v) < 0.05 ? 'btn-active' : ''}`}
+                    onClick={() => onUpdatePartProps(part.id, { voltage: opt.v })}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          );
+        })()}
+
+        {(part.type === 'buck-lm2596' || part.type === 'boost-mt3608') && (() => {
+          const isBuck = part.type === 'buck-lm2596';
+          const targetV = Number(part.props.targetVoltage ?? (isBuck ? 5.0 : 12.0));
+          const st = snapshot?.running ? snapshot.converterStates?.[part.id] : undefined;
+          const presets = isBuck ? [3.3, 5.0, 7.4, 9.0, 12.0] : [5.0, 9.0, 12.0, 15.0, 24.0];
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="conv-target">
+                  {t.converterTargetLabel}: {targetV.toFixed(1)} V
+                </label>
+                <input
+                  id="conv-target"
+                  type="range"
+                  min={isBuck ? 1.3 : 3.0}
+                  max={isBuck ? 24.0 : 28.0}
+                  step={0.1}
+                  value={targetV}
+                  onChange={(e) => onUpdatePartProps(part.id, { targetVoltage: Number(e.target.value) })}
+                />
+              </div>
+              <div className="cat-chips">
+                {presets.map((pv) => (
+                  <button
+                    key={pv}
+                    type="button"
+                    className={`btn btn-compact ${Math.abs(targetV - pv) < 0.05 ? 'btn-active' : ''}`}
+                    onClick={() => onUpdatePartProps(part.id, { targetVoltage: pv })}
+                  >
+                    {pv}V
+                  </button>
+                ))}
+              </div>
+              {st && (
+                <>
+                  <div className="metric-card">
+                    <span>{t.converterStatusLabel}</span>
+                    <span className="metric-value">{st.active ? t.converterActive : t.converterOff}</span>
+                  </div>
+                  <div className="metric-card">
+                    <span>{t.converterInputLabel}</span>
+                    <span className="metric-value">{st.vin.toFixed(2)} V</span>
+                  </div>
+                  <div className="metric-card">
+                    <span>{t.converterOutputLabel}</span>
+                    <span className="metric-value">{st.vout.toFixed(2)} V</span>
+                  </div>
+                </>
+              )}
+            </>
+          );
+        })()}
+
+        {part.type === 'l298n' && (() => {
+          const drv = snapshot?.running ? snapshot.l298nStates?.[part.id] : undefined;
+          const regOn = part.props.reg5vEnabled !== false;
+          return (
+            <>
+              <div className="metric-card">
+                <span>{t.l298nSupplyLabel}</span>
+                <span className="metric-value">{drv ? `${drv.vSupply.toFixed(2)} V` : '0.00 V'}</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.l298nChanALabel}</span>
+                <span className="metric-value">{drv ? `${drv.outA.toFixed(2)} V` : '0.00 V'}</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.l298nChanBLabel}</span>
+                <span className="metric-value">{drv ? `${drv.outB.toFixed(2)} V` : '0.00 V'}</span>
+              </div>
+              <div className="field-group">
+                <span className="field-label">{t.l298nReg5vLabel}</span>
+                <button
+                  type="button"
+                  className={`btn ${regOn ? 'btn-active' : ''}`}
+                  aria-pressed={regOn}
+                  onClick={() => onUpdatePartProps(part.id, { reg5vEnabled: !regOn })}
+                >
+                  {regOn ? t.l298nReg5vOn : t.l298nReg5vOff}
+                </button>
+              </div>
+            </>
+          );
+        })()}
+
         {/* Flip horizontal & vertical available on every component */}
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
           <button

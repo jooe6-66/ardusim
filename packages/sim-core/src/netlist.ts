@@ -123,6 +123,11 @@ export function buildNetlist(
       }
     }
 
+    // DC-DC Buck / Boost converters share a common negative ground bus (IN- <-> OUT-)
+    if (part.type === 'buck-lm2596' || part.type === 'boost-mt3608') {
+      ds.union(`${part.id}:IN-`, `${part.id}:OUT-`);
+    }
+
     // 4x4 Matrix Keypad: pressing (row, col) shorts R{row+1} to C{col+1}
     if (part.type === 'keypad-4x4') {
       const lockedKey = typeof part.props.activeKey === 'string' ? part.props.activeKey : '';

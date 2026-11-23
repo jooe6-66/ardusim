@@ -58,6 +58,7 @@ export const PartPickerSheet: React.FC<PartPickerSheetProps> = ({
 
   const cats: Array<{ id: FilterCat; label: string }> = [
     { id: 'all', label: t.catAll },
+    { id: 'power', label: t.catPower },
     { id: 'breadboard', label: t.catBreadboard },
     { id: 'passive', label: t.catPassive },
     { id: 'sensor', label: t.catSensor },

@@ -117,19 +117,26 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         </g>
         {manifest.pins.map((pin) => {
           const isTop = pin.y < 100;
+          const shortLabel = pin.id
+            .replace(/\.\d+$/, '')
+            .replace('RESET', 'RST')
+            .replace('AREF', 'REF');
           return (
             <g key={pin.id}>
               <rect x={pin.x - 3.5} y={pin.y - 3.5} width={7} height={7} rx={1} fill="#374151" stroke="#0B0F10" strokeWidth={0.8} />
-              <text
-                x={pin.x}
-                y={isTop ? pin.y + 18 : pin.y - 12}
-                textAnchor="middle"
-                fill="#E2F2F0"
-                fontSize={7}
-                fontFamily="var(--font-mono)"
-              >
-                {pin.id.replace(/\.\d+$/, '')}
-              </text>
+              <g transform={`translate(${pin.x}, ${isTop ? pin.y + 10 : pin.y - 10}) rotate(-90)`}>
+                <text
+                  x={0}
+                  y={0}
+                  textAnchor={isTop ? 'end' : 'start'}
+                  dominantBaseline="central"
+                  fill="#E2F2F0"
+                  fontSize={6.8}
+                  fontFamily="var(--font-mono)"
+                >
+                  {shortLabel}
+                </text>
+              </g>
             </g>
           );
         })}
@@ -157,34 +164,42 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         <rect x={4} y={35} width={18} height={26} rx={2} fill="#94A3B8" />
         {/* TQFP-32 rotated ATmega328P */}
         <g transform="translate(114, 48) rotate(45)">
-          <rect x={-14} y={-14} width={28} height={28} rx={2} fill="#1B2021" stroke="#475569" strokeWidth={1} />
+          <rect x={-12} y={-12} width={24} height={24} rx={2} fill="#1B2021" stroke="#475569" strokeWidth={1} />
         </g>
-        <text x={52} y={46} fill="#E6F4F1" fontSize={11} fontWeight={700}>NANO</text>
-        <text x={52} y={58} fill="#99D6D0" fontSize={7.5} fontFamily="var(--font-mono)">328P A0-A7</text>
+        <text x={44} y={46} fill="#E6F4F1" fontSize={10.5} fontWeight={700}>NANO</text>
+        <text x={44} y={56} fill="#99D6D0" fontSize={7} fontFamily="var(--font-mono)">328P</text>
         {/* Status LEDs */}
-        <circle cx={154} cy={42} r={3.5} fill={lOn ? '#F59E0B' : '#4A3D1C'} />
-        <text x={161} y={45} fill="#E6F4F1" fontSize={7} fontFamily="var(--font-mono)">L</text>
-        <circle cx={154} cy={55} r={3.5} fill={running ? '#22C55E' : '#1E462C'} />
-        <text x={161} y={58} fill="#E6F4F1" fontSize={7} fontFamily="var(--font-mono)">PWR</text>
+        <circle cx={150} cy={43} r={3.2} fill={lOn ? '#F59E0B' : '#4A3D1C'} />
+        <text x={156} y={45.5} fill="#E6F4F1" fontSize={6.5} fontFamily="var(--font-mono)">L</text>
+        <circle cx={150} cy={54} r={3.2} fill={running ? '#22C55E' : '#1E462C'} />
+        <text x={156} y={56.5} fill="#E6F4F1" fontSize={6.5} fontFamily="var(--font-mono)">PWR</text>
         {/* Reset tactile switch */}
         <rect x={184} y={41} width={14} height={14} rx={2} fill="#E2E8F0" stroke="#475569" strokeWidth={1} />
         <circle cx={191} cy={48} r={4} fill="#F8FAFC" stroke="#64748B" strokeWidth={0.8} />
         {manifest.pins.map((pin) => {
           const isTop = pin.y < 48;
+          const shortLabel = pin.id
+            .replace(/\.\d+$/, '')
+            .replace('RESET', 'RST')
+            .replace('AREF', 'REF')
+            .replace('3.3V', '3V3');
           return (
             <g key={pin.id}>
-              <circle cx={pin.x} cy={pin.y} r={3.6} fill="#D4AF37" stroke="#0B0F10" strokeWidth={0.8} />
-              <circle cx={pin.x} cy={pin.y} r={1.6} fill="#1E293B" />
-              <text
-                x={pin.x}
-                y={isTop ? pin.y + 13 : pin.y - 8}
-                textAnchor="middle"
-                fill="#E2F2F0"
-                fontSize={6.2}
-                fontFamily="var(--font-mono)"
-              >
-                {pin.id.replace(/\.\d+$/, '').replace('RESET', 'RS')}
-              </text>
+              <circle cx={pin.x} cy={pin.y} r={3.4} fill="#D4AF37" stroke="#0B0F10" strokeWidth={0.8} />
+              <circle cx={pin.x} cy={pin.y} r={1.5} fill="#1E293B" />
+              <g transform={`translate(${pin.x}, ${isTop ? pin.y + 7.5 : pin.y - 7.5}) rotate(-90)`}>
+                <text
+                  x={0}
+                  y={0}
+                  textAnchor={isTop ? 'end' : 'start'}
+                  dominantBaseline="central"
+                  fill="#E2F2F0"
+                  fontSize={5.8}
+                  fontFamily="var(--font-mono)"
+                >
+                  {shortLabel}
+                </text>
+              </g>
             </g>
           );
         })}
@@ -219,43 +234,53 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         <rect x={272} y={194} width={96} height={16} rx={2} fill="#141819" />
         <rect x={397} y={12} width={28} height={192} rx={2} fill="#141819" />
         {/* ATmega2560 QFP-100 chip */}
-        <rect x={208} y={76} width={66} height={66} rx={4} fill="#1B2021" stroke="#475569" strokeWidth={1.2} />
-        <text x={241} y={107} textAnchor="middle" fill="#CBD5E1" fontSize={8.5} fontFamily="var(--font-mono)">
+        <rect x={224} y={76} width={64} height={64} rx={4} fill="#1B2021" stroke="#475569" strokeWidth={1.2} />
+        <text x={256} y={106} textAnchor="middle" fill="#CBD5E1" fontSize={8.5} fontFamily="var(--font-mono)">
           ATMEGA
         </text>
-        <text x={241} y={119} textAnchor="middle" fill="#CBD5E1" fontSize={8.5} fontFamily="var(--font-mono)">
+        <text x={256} y={118} textAnchor="middle" fill="#CBD5E1" fontSize={8.5} fontFamily="var(--font-mono)">
           2560
         </text>
-        <text x={56} y={96} fill="#E6F4F1" fontSize={14} fontWeight={700}>MEGA 2560</text>
-        <text x={56} y={112} fill="#99D6D0" fontSize={8.5} fontFamily="var(--font-mono)">
-          54 Digital | 16 Analog | 4 UART
+        <text x={50} y={96} fill="#E6F4F1" fontSize={14} fontWeight={700}>MEGA 2560</text>
+        <text x={50} y={111} fill="#99D6D0" fontSize={8} fontFamily="var(--font-mono)">
+          54 Digital | 16 Analog
         </text>
-        <g transform="translate(88, 56)">
-          <circle cx={0} cy={0} r={4.5} fill={lOn ? '#F59E0B' : '#4A3D1C'} />
-          {lOn && <circle cx={0} cy={0} r={8.5} fill="#F59E0B" opacity={0.35} />}
+        <text x={50} y={123} fill="#99D6D0" fontSize={8} fontFamily="var(--font-mono)">
+          4 UART | 16 MHz AVR
+        </text>
+        <g transform="translate(88, 62)">
+          <circle cx={0} cy={0} r={4.2} fill={lOn ? '#F59E0B' : '#4A3D1C'} />
+          {lOn && <circle cx={0} cy={0} r={8} fill="#F59E0B" opacity={0.35} />}
           <text x={9} y={3} fill="#E6F4F1" fontSize={8} fontFamily="var(--font-mono)">L (13)</text>
         </g>
-        <g transform="translate(154, 56)">
-          <circle cx={0} cy={0} r={4.5} fill={running ? '#22C55E' : '#1E462C'} />
+        <g transform="translate(154, 62)">
+          <circle cx={0} cy={0} r={4.2} fill={running ? '#22C55E' : '#1E462C'} />
           <text x={9} y={3} fill="#E6F4F1" fontSize={8} fontFamily="var(--font-mono)">ON</text>
         </g>
         {manifest.pins.map((pin) => {
           const isRight = pin.exitDir === 'right';
           const isTop = pin.y < 100 && !isRight;
+          const shortLabel = pin.id
+            .replace(/\.\d+$/, '')
+            .replace('RESET', 'RST')
+            .replace('AREF', 'REF');
           return (
             <g key={pin.id}>
               <rect x={pin.x - 3} y={pin.y - 3} width={6} height={6} rx={1} fill="#374151" stroke="#0B0F10" strokeWidth={0.7} />
               {!isRight ? (
-                <text
-                  x={pin.x}
-                  y={isTop ? pin.y + 17 : pin.y - 11}
-                  textAnchor="middle"
-                  fill="#E2F2F0"
-                  fontSize={6.5}
-                  fontFamily="var(--font-mono)"
-                >
-                  {pin.id.replace(/\.\d+$/, '')}
-                </text>
+                <g transform={`translate(${pin.x}, ${isTop ? pin.y + 10.5 : pin.y - 10.5}) rotate(-90)`}>
+                  <text
+                    x={0}
+                    y={0}
+                    textAnchor={isTop ? 'end' : 'start'}
+                    dominantBaseline="central"
+                    fill="#E2F2F0"
+                    fontSize={6.6}
+                    fontFamily="var(--font-mono)"
+                  >
+                    {shortLabel}
+                  </text>
+                </g>
               ) : Number(pin.id) % 4 === 2 ? (
                 <text x={392} y={pin.y + 3} textAnchor="end" fill="#E2F2F0" fontSize={6.5} fontFamily="var(--font-mono)">
                   {pin.id}
@@ -996,6 +1021,212 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         {manifest.pins.map((p) => (
           <line key={p.id} x1={p.x} y1={58} x2={p.x} y2={68} stroke="#CBD5E1" strokeWidth={2.2} />
         ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'l298n') {
+    const drv = snapshot?.running ? snapshot.l298nStates?.[part.id] : undefined;
+    const powered = Boolean(drv?.powered);
+    return (
+      <g>
+        {/* Classic Red L298N PCB */}
+        <rect
+          x={12}
+          y={6}
+          width={108}
+          height={102}
+          rx={5}
+          fill="#B91C1C"
+          stroke={selected ? 'var(--accent)' : '#7F1D1D'}
+          strokeWidth={selected ? 2.5 : 1.5}
+        />
+        {/* Mounting holes */}
+        <circle cx={19} cy={13} r={2.4} fill="#FDE68A" stroke="#7F1D1D" strokeWidth={0.7} />
+        <circle cx={113} cy={13} r={2.4} fill="#FDE68A" stroke="#7F1D1D" strokeWidth={0.7} />
+        <circle cx={19} cy={101} r={2.4} fill="#FDE68A" stroke="#7F1D1D" strokeWidth={0.7} />
+        <circle cx={113} cy={101} r={2.4} fill="#FDE68A" stroke="#7F1D1D" strokeWidth={0.7} />
+        {/* Tall black aluminum finned heatsink */}
+        <rect x={42} y={12} width={48} height={36} rx={3} fill="#18181B" stroke="#3F3F46" strokeWidth={1.1} />
+        {[48, 55, 62, 69, 76, 83].map((fx) => (
+          <line key={fx} x1={fx} y1={14} x2={fx} y2={46} stroke="#3F3F46" strokeWidth={1.3} />
+        ))}
+        {/* Blue 2-way motor screw terminals (Left OUT1/2 & Right OUT3/4) */}
+        <rect x={8} y={28} width={18} height={36} rx={2} fill="#1D4ED8" stroke="#1E3A8A" strokeWidth={1} />
+        <circle cx={17} cy={36} r={3.5} fill="#CBD5E1" stroke="#475569" strokeWidth={0.8} />
+        <circle cx={17} cy={56} r={3.5} fill="#CBD5E1" stroke="#475569" strokeWidth={0.8} />
+        <rect x={106} y={28} width={18} height={36} rx={2} fill="#1D4ED8" stroke="#1E3A8A" strokeWidth={1} />
+        <circle cx={115} cy={36} r={3.5} fill="#CBD5E1" stroke="#475569" strokeWidth={0.8} />
+        <circle cx={115} cy={56} r={3.5} fill="#CBD5E1" stroke="#475569" strokeWidth={0.8} />
+        {/* Blue 3-way power terminal (12V / GND / 5V) */}
+        <rect x={11} y={92} width={35} height={18} rx={2} fill="#1D4ED8" stroke="#1E3A8A" strokeWidth={1} />
+        {/* Logic pin header strip */}
+        <rect x={53} y={98} width={70} height={11} rx={1.5} fill="#18181B" />
+        {/* Status LED & label */}
+        <circle cx={34} cy={62} r={3.5} fill={powered ? '#EF4444' : '#450A0A'} stroke="#FCA5A5" strokeWidth={0.6} />
+        {powered && <circle cx={34} cy={62} r={6.5} fill="#EF4444" opacity={0.35} />}
+        <text x={66} y={62} textAnchor="middle" fill="#FEF2F2" fontSize={10} fontWeight={700} fontFamily="var(--font-mono)">
+          L298N
+        </text>
+        <text x={66} y={73} textAnchor="middle" fill="#FECACA" fontSize={6.8} fontFamily="var(--font-mono)">
+          {drv ? `A:${drv.outA.toFixed(1)}V B:${drv.outB.toFixed(1)}V` : 'DUAL H-BRIDGE'}
+        </text>
+        {/* Crisp vertical bottom pin labels */}
+        {manifest.pins
+          .filter((p) => p.exitDir === 'down')
+          .map((p) => (
+            <g key={p.id}>
+              <line x1={p.x} y1={108} x2={p.x} y2={118} stroke="#CBD5E1" strokeWidth={2.2} />
+              <g transform={`translate(${p.x}, 90) rotate(-90)`}>
+                <text x={0} y={0} textAnchor="start" dominantBaseline="central" fill="#FEE2E2" fontSize={5.8} fontFamily="var(--font-mono)">
+                  {p.id}
+                </text>
+              </g>
+            </g>
+          ))}
+        {manifest.pins
+          .filter((p) => p.exitDir === 'left' || p.exitDir === 'right')
+          .map((p) => (
+            <line
+              key={p.id}
+              x1={p.exitDir === 'left' ? 6 : 124}
+              y1={p.y}
+              x2={p.exitDir === 'left' ? 10 : 126}
+              y2={p.y}
+              stroke="#CBD5E1"
+              strokeWidth={2.4}
+            />
+          ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'buck-lm2596' || part.type === 'boost-mt3608') {
+    const isBuck = part.type === 'buck-lm2596';
+    const st = snapshot?.running ? snapshot.converterStates?.[part.id] : undefined;
+    const targetV = Number(part.props.targetVoltage ?? (isBuck ? 5.0 : 12.0));
+    const w = manifest.width;
+    const h = manifest.height;
+    return (
+      <g>
+        <rect
+          x={10}
+          y={4}
+          width={w - 20}
+          height={h - 8}
+          rx={5}
+          fill={isBuck ? '#1D4ED8' : '#1E3A8A'}
+          stroke={selected ? 'var(--accent)' : '#172554'}
+          strokeWidth={selected ? 2.5 : 1.5}
+        />
+        {/* Inductor coil */}
+        <rect x={22} y={14} width={22} height={22} rx={3} fill="#1E293B" stroke="#64748B" strokeWidth={1} />
+        <text x={33} y={28} textAnchor="middle" fill="#CBD5E1" fontSize={7} fontFamily="var(--font-mono)">
+          {isBuck ? '330' : '220'}
+        </text>
+        {/* Blue multi-turn trimmer potentiometer with brass screw */}
+        <rect x={54} y={14} width={16} height={22} rx={2} fill="#2563EB" stroke="#93C5FD" strokeWidth={0.9} />
+        <circle cx={62} cy={20} r={3.6} fill="#F59E0B" stroke="#78350F" strokeWidth={0.7} />
+        <line x1={60} y1={20} x2={64} y2={20} stroke="#78350F" strokeWidth={0.9} />
+        {/* Electrolytic filter capacitor */}
+        <circle cx={88} cy={25} r={9.5} fill="#CBD5E1" stroke="#475569" strokeWidth={1} />
+        <path d="M 88 15.5 A 9.5 9.5 0 0 1 88 34.5 Z" fill="#1E293B" />
+        {/* Power indicator LED */}
+        <circle cx={w - 20} cy={14} r={3} fill={st?.active ? '#22C55E' : '#14532D'} />
+        <text x={w / 2} y={48} textAnchor="middle" fill="#EFF6FF" fontSize={8} fontWeight={700} fontFamily="var(--font-mono)">
+          {isBuck ? 'LM2596 BUCK' : 'MT3608 BOOST'}
+        </text>
+        <text x={w / 2} y={58} textAnchor="middle" fill="#BFDBFE" fontSize={7} fontFamily="var(--font-mono)">
+          {st ? `${st.vin.toFixed(1)}V -> ${st.vout.toFixed(1)}V` : `SET ${targetV.toFixed(1)}V`}
+        </text>
+        {/* Solder pad pins */}
+        {manifest.pins.map((p) => {
+          const isLeft = p.exitDir === 'left';
+          return (
+            <g key={p.id}>
+              <circle cx={isLeft ? 14 : w - 14} cy={p.y} r={4} fill="#F59E0B" stroke="#1E293B" strokeWidth={0.8} />
+              <line x1={isLeft ? 6 : w - 10} y1={p.y} x2={isLeft ? 10 : w - 6} y2={p.y} stroke="#CBD5E1" strokeWidth={2.2} />
+            </g>
+          );
+        })}
+      </g>
+    );
+  }
+
+  if (part.type === 'battery-18650') {
+    const cells = Math.min(3, Math.max(1, Math.round(Number(part.props.cells ?? 1))));
+    const volts = Number(part.props.voltage ?? Math.round(cells * 3.7 * 10) / 10);
+    const cellH = cells === 1 ? 30 : cells === 2 ? 19 : 13;
+    const gap = 3;
+    const totalH = cells * cellH + (cells - 1) * gap;
+    const startY = (manifest.height - totalH) / 2;
+    return (
+      <g>
+        {/* Black 18650 holder housing */}
+        <rect
+          x={6}
+          y={4}
+          width={96}
+          height={56}
+          rx={5}
+          fill="#1F2937"
+          stroke={selected ? 'var(--accent)' : '#111827'}
+          strokeWidth={selected ? 2.5 : 1.5}
+        />
+        {Array.from({ length: cells }).map((_, i) => {
+          const cy = startY + i * (cellH + gap);
+          return (
+            <g key={i}>
+              <rect x={12} y={cy} width={80} height={cellH} rx={4} fill="#0EA5E9" stroke="#0369A1" strokeWidth={1} />
+              <rect x={92} y={cy + cellH * 0.25} width={4} height={cellH * 0.5} rx={1} fill="#E2E8F0" />
+            </g>
+          );
+        })}
+        <text x={52} y={30} textAnchor="middle" fill="#F8FAFC" fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
+          18650 {cells}S
+        </text>
+        <text x={52} y={42} textAnchor="middle" fill="#E0F2FE" fontSize={8} fontWeight={600} fontFamily="var(--font-mono)">
+          {volts.toFixed(1)}V
+        </text>
+        <line x1={102} y1={20} x2={110} y2={20} stroke="#EF4444" strokeWidth={2.6} strokeLinecap="round" />
+        <line x1={102} y1={44} x2={110} y2={44} stroke="#111827" strokeWidth={2.6} strokeLinecap="round" />
+        <text x={97} y={18} textAnchor="end" fill="#FCA5A5" fontSize={8} fontWeight={700}>+</text>
+        <text x={97} y={47} textAnchor="end" fill="#CBD5E1" fontSize={8} fontWeight={700}>-</text>
+      </g>
+    );
+  }
+
+  if (part.type === 'battery-lipo-3s') {
+    const volts = Number(part.props.voltage ?? 11.1);
+    return (
+      <g>
+        {/* Classic FPV 3S LiPo brick pack */}
+        <rect
+          x={6}
+          y={4}
+          width={102}
+          height={60}
+          rx={6}
+          fill="#18181B"
+          stroke={selected ? 'var(--accent)' : '#09090B'}
+          strokeWidth={selected ? 2.5 : 1.5}
+        />
+        {/* Signature yellow/amber pack stripe */}
+        <rect x={6} y={11} width={102} height={11} fill="#F59E0B" />
+        <text x={57} y={19} textAnchor="middle" fill="#18181B" fontSize={7.8} fontWeight={800} fontFamily="var(--font-mono)">
+          LiPo 3S 45C
+        </text>
+        <text x={57} y={39} textAnchor="middle" fill="#F8FAFC" fontSize={11} fontWeight={700} fontFamily="var(--font-mono)">
+          {volts.toFixed(1)}V
+        </text>
+        <text x={57} y={52} textAnchor="middle" fill="#A1A1AA" fontSize={7} fontFamily="var(--font-mono)">
+          1300mAh 3-Cell
+        </text>
+        {/* XT60 red/black leads */}
+        <line x1={108} y1={22} x2={118} y2={22} stroke="#DC2626" strokeWidth={3} strokeLinecap="round" />
+        <line x1={108} y1={46} x2={118} y2={46} stroke="#334155" strokeWidth={3} strokeLinecap="round" />
+        <text x={103} y={25} textAnchor="end" fill="#FCA5A5" fontSize={8.5} fontWeight={700}>+</text>
+        <text x={103} y={49} textAnchor="end" fill="#CBD5E1" fontSize={8.5} fontWeight={700}>-</text>
       </g>
     );
   }

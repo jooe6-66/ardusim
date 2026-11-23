@@ -1,6 +1,7 @@
 import {
   CapacitanceUnit,
   DiodeModel,
+  L298NVisualState,
   LedColor,
   LedVisualState,
   McuPinState,
@@ -8,6 +9,7 @@ import {
   NetlistResult,
   PartInstance,
   PartManifest,
+  PowerConverterVisualState,
   ResistanceUnit,
   RgbLedVisualState,
   SimWarning,
@@ -79,6 +81,8 @@ export interface PassiveSolveOutput {
   diodeConducting: Record<string, boolean>;
   relayEnergized: Record<string, boolean>;
   motorStates: Record<string, MotorVisualState>;
+  converterStates: Record<string, PowerConverterVisualState>;
+  l298nStates: Record<string, L298NVisualState>;
   warnings: SimWarning[];
 }
 
@@ -192,6 +196,35 @@ export class PassiveCircuitSolver {
     };
 
     const voltageSources: Array<{ node: number; volts: number; g: number }> = [];
+    const floatingBatteries: Array<{ pos: number; neg: number; volts: number }> = [];
+    const converters: Array<{
+      partId: string;
+      kind: 'buck' | 'boost';
+      inP: number;
+      inN: number;
+      outP: number;
+      outN: number;
+      targetV: number;
+    }> = [];
+    const l298nDrivers: Array<{
+      partId: string;
+      v12: number;
+      gnd: number;
+      v5: number;
+      ena: number;
+      enaWired: boolean;
+      in1: number;
+      in2: number;
+      in3: number;
+      in4: number;
+      enb: number;
+      enbWired: boolean;
+      out1: number;
+      out2: number;
+      out3: number;
+      out4: number;
+      reg5vEnabled: boolean;
+    }> = [];
     const resistors: ResistorBranch[] = [];
     const diodes: DiodeBranch[] = [];
     const capacitors: CapacitorBranch[] = [];
@@ -387,11 +420,81 @@ export class PassiveCircuitSolver {
           inp,
           activeLow: Boolean(part.props.activeLow),
         });
+      } else if (part.type === 'battery-18650' || part.type === 'battery-lipo-3s') {
+        const pos = touchNet(netlist.pinToNet.get(`${part.id}:+`));
+        const neg = touchNet(netlist.pinToNet.get(`${part.id}:-`));
+        if (pos >= 0 && neg >= 0 && pos !== neg) {
+          let volts: number;
+          if (part.type === 'battery-18650') {
+            const cells = Math.min(3, Math.max(1, Math.round(Number(part.props.cells ?? 1))));
+            const propV = Number(part.props.voltage);
+            volts = Number.isFinite(propV) && propV > 0 ? propV : Math.round(cells * 3.7 * 10) / 10;
+          } else {
+            const propV = Number(part.props.voltage ?? 11.1);
+            volts = Number.isFinite(propV) ? Math.min(12.6, Math.max(9.0, propV)) : 11.1;
+          }
+          floatingBatteries.push({ pos, neg, volts });
+        }
+      } else if (part.type === 'buck-lm2596' || part.type === 'boost-mt3608') {
+        const inP = touchNet(netlist.pinToNet.get(`${part.id}:IN+`));
+        const inN = touchNet(netlist.pinToNet.get(`${part.id}:IN-`));
+        const outP = touchNet(netlist.pinToNet.get(`${part.id}:OUT+`));
+        const outN = touchNet(netlist.pinToNet.get(`${part.id}:OUT-`));
+        const isBuck = part.type === 'buck-lm2596';
+        const rawTarget = Number(part.props.targetVoltage ?? (isBuck ? 5.0 : 12.0));
+        const targetV = isBuck
+          ? Math.min(35, Math.max(1.25, Number.isFinite(rawTarget) ? rawTarget : 5.0))
+          : Math.min(28, Math.max(2.5, Number.isFinite(rawTarget) ? rawTarget : 12.0));
+        converters.push({
+          partId: part.id,
+          kind: isBuck ? 'buck' : 'boost',
+          inP,
+          inN,
+          outP,
+          outN,
+          targetV,
+        });
+      } else if (part.type === 'l298n') {
+        const getNet = (pin: string) => netlist.pinToNet.get(`${part.id}:${pin}`);
+        const isWired = (netId: string | undefined) =>
+          netId !== undefined && (netlist.netToPins.get(netId)?.length ?? 0) > 1;
+        const enaNet = getNet('ENA');
+        const enbNet = getNet('ENB');
+        l298nDrivers.push({
+          partId: part.id,
+          v12: touchNet(getNet('12V')),
+          gnd: touchNet(getNet('GND')),
+          v5: touchNet(getNet('5V')),
+          ena: touchNet(enaNet),
+          enaWired: isWired(enaNet),
+          in1: touchNet(getNet('IN1')),
+          in2: touchNet(getNet('IN2')),
+          in3: touchNet(getNet('IN3')),
+          in4: touchNet(getNet('IN4')),
+          enb: touchNet(enbNet),
+          enbWired: isWired(enbNet),
+          out1: touchNet(getNet('OUT1')),
+          out2: touchNet(getNet('OUT2')),
+          out3: touchNet(getNet('OUT3')),
+          out4: touchNet(getNet('OUT4')),
+          reg5vEnabled: part.props.reg5vEnabled !== false,
+        });
       }
     }
 
     const n = activeNetList.length;
     const diodeMode = new Int8Array(diodes.length);
+    const convActive = new Uint8Array(converters.length);
+    const convOutV = new Float64Array(converters.length);
+    const l298nPrev = l298nDrivers.map(() => ({
+      powered: false,
+      reg5v: false,
+      vSupply: 0,
+      v1: 0,
+      v2: 0,
+      v3: 0,
+      v4: 0,
+    }));
     let nodeV: Float64Array<ArrayBufferLike> = new Float64Array(n);
 
     const stampResistor = (A: Float64Array[], i: number, j: number, g: number) => {
@@ -401,7 +504,21 @@ export class PassiveCircuitSolver {
       A[j][i] -= g;
     };
 
-    for (let iter = 0; iter < 6; iter++) {
+    const stampFloatingSource = (
+      A: Float64Array[],
+      rhs: Float64Array,
+      pos: number,
+      neg: number,
+      volts: number,
+      g: number
+    ) => {
+      if (pos < 0 || neg < 0 || pos === neg) return;
+      stampResistor(A, pos, neg, g);
+      rhs[pos] += g * volts;
+      rhs[neg] -= g * volts;
+    };
+
+    for (let iter = 0; iter < 10; iter++) {
       const A: Float64Array[] = Array.from({ length: n }, () => new Float64Array(n));
       const rhs = new Float64Array(n);
 
@@ -412,6 +529,44 @@ export class PassiveCircuitSolver {
       for (const vs of voltageSources) {
         A[vs.node][vs.node] += vs.g;
         rhs[vs.node] += vs.g * vs.volts;
+      }
+
+      for (const bat of floatingBatteries) {
+        // True two-terminal Norton source so batteries work both grounded and series-stacked
+        stampFloatingSource(A, rhs, bat.pos, bat.neg, bat.volts, 10);
+        // Gentle 10k reference bleed on negative terminal for standalone battery circuits
+        A[bat.neg][bat.neg] += 1e-4;
+      }
+
+      for (let cIdx = 0; cIdx < converters.length; cIdx++) {
+        const c = converters[cIdx];
+        if (c.inP >= 0 && c.inN >= 0 && c.inP !== c.inN) {
+          stampResistor(A, c.inP, c.inN, 1 / 10000);
+        }
+        if (c.outN >= 0) A[c.outN][c.outN] += 1e-4;
+        if (convActive[cIdx] && c.outP >= 0 && c.outN >= 0 && c.outP !== c.outN) {
+          stampFloatingSource(A, rhs, c.outP, c.outN, convOutV[cIdx], 10);
+        }
+      }
+
+      for (let dIdx = 0; dIdx < l298nDrivers.length; dIdx++) {
+        const drv = l298nDrivers[dIdx];
+        const st = l298nPrev[dIdx];
+        if (drv.v12 >= 0 && drv.gnd >= 0 && drv.v12 !== drv.gnd) {
+          stampResistor(A, drv.v12, drv.gnd, 1 / 10000);
+        }
+        if (drv.gnd >= 0) {
+          A[drv.gnd][drv.gnd] += 1e-4;
+          if (st.reg5v && drv.v5 >= 0 && drv.v5 !== drv.gnd) {
+            stampFloatingSource(A, rhs, drv.v5, drv.gnd, 5.0, 5);
+          }
+          if (st.powered) {
+            if (drv.out1 >= 0 && drv.out1 !== drv.gnd) stampFloatingSource(A, rhs, drv.out1, drv.gnd, st.v1, 2);
+            if (drv.out2 >= 0 && drv.out2 !== drv.gnd) stampFloatingSource(A, rhs, drv.out2, drv.gnd, st.v2, 2);
+            if (drv.out3 >= 0 && drv.out3 !== drv.gnd) stampFloatingSource(A, rhs, drv.out3, drv.gnd, st.v3, 2);
+            if (drv.out4 >= 0 && drv.out4 !== drv.gnd) stampFloatingSource(A, rhs, drv.out4, drv.gnd, st.v4, 2);
+          }
+        }
       }
 
       for (const r of resistors) {
@@ -449,6 +604,73 @@ export class PassiveCircuitSolver {
       nodeV = solveLinearSystem(A, rhs);
 
       let changed = false;
+      for (let cIdx = 0; cIdx < converters.length; cIdx++) {
+        const c = converters[cIdx];
+        const vin = (c.inP >= 0 ? nodeV[c.inP] : 0) - (c.inN >= 0 ? nodeV[c.inN] : 0);
+        const nextActive = c.kind === 'buck' ? vin >= 3.0 : vin >= 2.0;
+        const nextOut = nextActive
+          ? c.kind === 'buck'
+            ? Math.min(c.targetV, Math.max(0, vin - 0.3))
+            : Math.max(c.targetV, vin)
+          : 0;
+        if (nextActive !== Boolean(convActive[cIdx]) || Math.abs(nextOut - convOutV[cIdx]) > 1e-3) {
+          convActive[cIdx] = nextActive ? 1 : 0;
+          convOutV[cIdx] = nextOut;
+          changed = true;
+        }
+      }
+
+      for (let dIdx = 0; dIdx < l298nDrivers.length; dIdx++) {
+        const drv = l298nDrivers[dIdx];
+        const st = l298nPrev[dIdx];
+        const vGnd = drv.gnd >= 0 ? nodeV[drv.gnd] : 0;
+        const vSupply = (drv.v12 >= 0 ? nodeV[drv.v12] : 0) - vGnd;
+        const nextPowered = vSupply >= 4.5;
+        const nextReg5v = drv.reg5vEnabled && vSupply >= 6.5;
+        const vMotorMax = nextPowered ? Math.max(0, vSupply - 1.4) : 0;
+
+        const pinRel = (idx: number) => (idx >= 0 ? nodeV[idx] - vGnd : 0);
+        const dutyA = drv.enaWired ? Math.min(1, Math.max(0, pinRel(drv.ena) / 5.0)) : 1;
+        const dutyB = drv.enbWired ? Math.min(1, Math.max(0, pinRel(drv.enb) / 5.0)) : 1;
+        const in1H = pinRel(drv.in1) >= 2.0;
+        const in2H = pinRel(drv.in2) >= 2.0;
+        const in3H = pinRel(drv.in3) >= 2.0;
+        const in4H = pinRel(drv.in4) >= 2.0;
+
+        let v1 = 0;
+        let v2 = 0;
+        if (nextPowered && in1H !== in2H) {
+          if (in1H) v1 = dutyA * vMotorMax;
+          else v2 = dutyA * vMotorMax;
+        }
+        let v3 = 0;
+        let v4 = 0;
+        if (nextPowered && in3H !== in4H) {
+          if (in3H) v3 = dutyB * vMotorMax;
+          else v4 = dutyB * vMotorMax;
+        }
+
+        if (
+          nextPowered !== st.powered ||
+          nextReg5v !== st.reg5v ||
+          Math.abs(v1 - st.v1) > 1e-3 ||
+          Math.abs(v2 - st.v2) > 1e-3 ||
+          Math.abs(v3 - st.v3) > 1e-3 ||
+          Math.abs(v4 - st.v4) > 1e-3
+        ) {
+          st.powered = nextPowered;
+          st.reg5v = nextReg5v;
+          st.vSupply = vSupply;
+          st.v1 = v1;
+          st.v2 = v2;
+          st.v3 = v3;
+          st.v4 = v4;
+          changed = true;
+        } else {
+          st.vSupply = vSupply;
+        }
+      }
+
       for (let dIdx = 0; dIdx < diodes.length; dIdx++) {
         const d = diodes[dIdx];
         const vDiff = nodeV[d.a] - nodeV[d.b];
@@ -478,7 +700,30 @@ export class PassiveCircuitSolver {
     const capacitorVoltages: Record<string, number> = {};
     const relayEnergized: Record<string, boolean> = {};
     const motorStates: Record<string, MotorVisualState> = {};
+    const converterStates: Record<string, PowerConverterVisualState> = {};
+    const l298nStates: Record<string, L298NVisualState> = {};
     const warnings: SimWarning[] = [];
+
+    for (let cIdx = 0; cIdx < converters.length; cIdx++) {
+      const c = converters[cIdx];
+      const vin = (c.inP >= 0 ? nodeV[c.inP] : 0) - (c.inN >= 0 ? nodeV[c.inN] : 0);
+      converterStates[c.partId] = {
+        vin: Math.round(vin * 100) / 100,
+        vout: Math.round(convOutV[cIdx] * 100) / 100,
+        active: Boolean(convActive[cIdx]),
+      };
+    }
+
+    for (let dIdx = 0; dIdx < l298nDrivers.length; dIdx++) {
+      const drv = l298nDrivers[dIdx];
+      const st = l298nPrev[dIdx];
+      l298nStates[drv.partId] = {
+        vSupply: Math.round(st.vSupply * 100) / 100,
+        outA: Math.round((st.v1 - st.v2) * 100) / 100,
+        outB: Math.round((st.v3 - st.v4) * 100) / 100,
+        powered: st.powered,
+      };
+    }
 
     for (let dIdx = 0; dIdx < diodes.length; dIdx++) {
       const d = diodes[dIdx];
@@ -553,6 +798,8 @@ export class PassiveCircuitSolver {
       diodeConducting,
       relayEnergized,
       motorStates,
+      converterStates,
+      l298nStates,
       warnings,
     };
   }

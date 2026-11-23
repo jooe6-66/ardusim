@@ -447,3 +447,155 @@ test('moveWireCorner and moveWireSegment reshape wires while keeping strict orth
     );
   }
 });
+
+test('PassiveCircuitSolver simulates 18650 (1S/2S/3S), LiPo 3S, Buck, Boost, and L298N H-bridge', () => {
+  const powerManifests = new Map<string, PartManifest>(testManifests);
+  powerManifests.set('battery-18650', {
+    type: 'battery-18650',
+    category: 'power',
+    width: 116,
+    height: 64,
+    name: { id: '18650', en: '18650' },
+    description: { id: '', en: '' },
+    defaultProps: { cells: 1, voltage: 3.7 },
+    pins: [
+      { id: '+', label: '+', x: 110, y: 20, type: 'power' },
+      { id: '-', label: '-', x: 110, y: 44, type: 'gnd' },
+    ],
+  });
+  powerManifests.set('battery-lipo-3s', {
+    type: 'battery-lipo-3s',
+    category: 'power',
+    width: 124,
+    height: 68,
+    name: { id: 'LiPo 3S', en: 'LiPo 3S' },
+    description: { id: '', en: '' },
+    defaultProps: { voltage: 11.1 },
+    pins: [
+      { id: '+', label: '+', x: 118, y: 22, type: 'power' },
+      { id: '-', label: '-', x: 118, y: 46, type: 'gnd' },
+    ],
+  });
+  powerManifests.set('buck-lm2596', {
+    type: 'buck-lm2596',
+    category: 'power',
+    width: 124,
+    height: 68,
+    name: { id: 'Buck', en: 'Buck' },
+    description: { id: '', en: '' },
+    defaultProps: { targetVoltage: 5.0 },
+    pins: [
+      { id: 'IN+', label: 'IN+', x: 6, y: 22, type: 'power' },
+      { id: 'IN-', label: 'IN-', x: 6, y: 46, type: 'gnd' },
+      { id: 'OUT+', label: 'OUT+', x: 118, y: 22, type: 'power' },
+      { id: 'OUT-', label: 'OUT-', x: 118, y: 46, type: 'gnd' },
+    ],
+  });
+  powerManifests.set('boost-mt3608', {
+    type: 'boost-mt3608',
+    category: 'power',
+    width: 116,
+    height: 64,
+    name: { id: 'Boost', en: 'Boost' },
+    description: { id: '', en: '' },
+    defaultProps: { targetVoltage: 12.0 },
+    pins: [
+      { id: 'IN+', label: 'IN+', x: 6, y: 20, type: 'power' },
+      { id: 'IN-', label: 'IN-', x: 6, y: 44, type: 'gnd' },
+      { id: 'OUT+', label: 'OUT+', x: 110, y: 20, type: 'power' },
+      { id: 'OUT-', label: 'OUT-', x: 110, y: 44, type: 'gnd' },
+    ],
+  });
+  powerManifests.set('l298n', {
+    type: 'l298n',
+    category: 'motor',
+    width: 132,
+    height: 124,
+    name: { id: 'L298N', en: 'L298N' },
+    description: { id: '', en: '' },
+    defaultProps: { reg5vEnabled: true },
+    pins: [
+      { id: 'OUT1', label: 'OUT1', x: 6, y: 36, type: 'passive' },
+      { id: 'OUT2', label: 'OUT2', x: 6, y: 56, type: 'passive' },
+      { id: 'OUT3', label: 'OUT3', x: 126, y: 36, type: 'passive' },
+      { id: 'OUT4', label: 'OUT4', x: 126, y: 56, type: 'passive' },
+      { id: '12V', label: '12V', x: 16, y: 118, type: 'power' },
+      { id: 'GND', label: 'GND', x: 28, y: 118, type: 'gnd' },
+      { id: '5V', label: '5V', x: 40, y: 118, type: 'power' },
+      { id: 'ENA', label: 'ENA', x: 58, y: 118, type: 'digital' },
+      { id: 'IN1', label: 'IN1', x: 70, y: 118, type: 'digital' },
+      { id: 'IN2', label: 'IN2', x: 82, y: 118, type: 'digital' },
+      { id: 'IN3', label: 'IN3', x: 94, y: 118, type: 'digital' },
+      { id: 'IN4', label: 'IN4', x: 106, y: 118, type: 'digital' },
+      { id: 'ENB', label: 'ENB', x: 118, y: 118, type: 'digital' },
+    ],
+  });
+  powerManifests.set('dc-motor', {
+    type: 'dc-motor',
+    category: 'motor',
+    width: 84,
+    height: 76,
+    name: { id: 'DC Motor', en: 'DC Motor' },
+    description: { id: '', en: '' },
+    defaultProps: {},
+    pins: [
+      { id: '+', label: '+', x: 30, y: 72, type: 'passive' },
+      { id: '-', label: '-', x: 54, y: 72, type: 'passive' },
+    ],
+  });
+
+  const solver = new PassiveCircuitSolver();
+
+  // 1. LiPo 3S (11.1V) -> Buck LM2596 (5V) -> 1k load
+  const buckParts: PartInstance[] = [
+    { id: 'lipo1', type: 'battery-lipo-3s', x: 0, y: 0, rotation: 0, props: { voltage: 11.1 } },
+    { id: 'buck1', type: 'buck-lm2596', x: 0, y: 0, rotation: 0, props: { targetVoltage: 5.0 } },
+    { id: 'r1', type: 'resistor', x: 0, y: 0, rotation: 0, props: { value: 1, unit: 'kohm' } },
+  ];
+  const buckWires: Wire[] = [
+    { id: 'w1', from: { partId: 'lipo1', pinId: '+' }, to: { partId: 'buck1', pinId: 'IN+' }, color: '#c00' },
+    { id: 'w2', from: { partId: 'lipo1', pinId: '-' }, to: { partId: 'buck1', pinId: 'IN-' }, color: '#000' },
+    { id: 'w3', from: { partId: 'buck1', pinId: 'OUT+' }, to: { partId: 'r1', pinId: '1' }, color: '#c00' },
+    { id: 'w4', from: { partId: 'buck1', pinId: 'OUT-' }, to: { partId: 'r1', pinId: '2' }, color: '#000' },
+  ];
+  const buckNet = buildNetlist(buckParts, buckWires, powerManifests);
+  const buckOut = solver.solve(buckParts, powerManifests, buckNet, [], 0.01);
+  assert.equal(buckOut.converterStates.buck1.active, true);
+  assert.ok(Math.abs(buckOut.converterStates.buck1.vin - 11.1) < 0.15);
+  assert.ok(Math.abs(buckOut.converterStates.buck1.vout - 5.0) < 0.1);
+
+  // 2. 18650 1S (3.7V) -> Boost MT3608 (12V) -> L298N -> DC Motor with 50% PWM on ENA
+  const boostParts: PartInstance[] = [
+    { id: 'u1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'b1', type: 'battery-18650', x: 0, y: 0, rotation: 0, props: { cells: 1, voltage: 3.7 } },
+    { id: 'boost1', type: 'boost-mt3608', x: 0, y: 0, rotation: 0, props: { targetVoltage: 12.0 } },
+    { id: 'drv1', type: 'l298n', x: 0, y: 0, rotation: 0, props: { reg5vEnabled: true } },
+    { id: 'm1', type: 'dc-motor', x: 0, y: 0, rotation: 0, props: {} },
+  ];
+  const boostWires: Wire[] = [
+    { id: 'w1', from: { partId: 'b1', pinId: '+' }, to: { partId: 'boost1', pinId: 'IN+' }, color: '#c00' },
+    { id: 'w2', from: { partId: 'b1', pinId: '-' }, to: { partId: 'boost1', pinId: 'IN-' }, color: '#000' },
+    { id: 'w3', from: { partId: 'boost1', pinId: 'OUT-' }, to: { partId: 'u1', pinId: 'GND.1' }, color: '#000' },
+    { id: 'w4', from: { partId: 'boost1', pinId: 'OUT+' }, to: { partId: 'drv1', pinId: '12V' }, color: '#c00' },
+    { id: 'w5', from: { partId: 'u1', pinId: 'GND.2' }, to: { partId: 'drv1', pinId: 'GND' }, color: '#000' },
+    { id: 'w6', from: { partId: 'u1', pinId: '5V' }, to: { partId: 'drv1', pinId: 'IN1' }, color: '#0a0' },
+    { id: 'w7', from: { partId: 'u1', pinId: 'GND.3' }, to: { partId: 'drv1', pinId: 'IN2' }, color: '#000' },
+    { id: 'w8', from: { partId: 'u1', pinId: '13' }, to: { partId: 'drv1', pinId: 'ENA' }, color: '#00c' },
+    { id: 'w9', from: { partId: 'drv1', pinId: 'OUT1' }, to: { partId: 'm1', pinId: '+' }, color: '#c00' },
+    { id: 'w10', from: { partId: 'drv1', pinId: 'OUT2' }, to: { partId: 'm1', pinId: '-' }, color: '#000' },
+  ];
+  const boostNet = buildNetlist(boostParts, boostWires, powerManifests);
+  const boostOut = solver.solve(
+    boostParts,
+    powerManifests,
+    boostNet,
+    [{ pinKey: 'u1:13', mode: 'OUTPUT_HIGH', outputVoltage: 2.5 }], // 50% PWM duty
+    0.01
+  );
+  assert.equal(boostOut.converterStates.boost1.active, true);
+  assert.ok(Math.abs(boostOut.converterStates.boost1.vout - 12.0) < 0.15);
+  assert.equal(boostOut.l298nStates.drv1.powered, true);
+  // (12V - 1.4V drop) * 50% duty = 5.3V across motor
+  assert.ok(boostOut.motorStates.m1.voltage > 4.6 && boostOut.motorStates.m1.voltage < 5.7, `Got motor V=${boostOut.motorStates.m1.voltage}`);
+  assert.ok(boostOut.motorStates.m1.rpm > 200);
+});

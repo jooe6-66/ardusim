@@ -61,6 +61,7 @@ export interface Messages {
   partSearchEmpty: string;
   catAll: string;
   catBreadboard: string;
+  catPower: string;
   catPassive: string;
   catSensor: string;
   catDisplay: string;
@@ -175,6 +176,20 @@ export interface Messages {
   wiresCount: (n: number) => string;
   clearSearch: string;
   resizeHandleLabel: string;
+  batteryCellsLabel: string;
+  batteryVoltageLabel: string;
+  converterTargetLabel: string;
+  converterInputLabel: string;
+  converterOutputLabel: string;
+  converterStatusLabel: string;
+  converterActive: string;
+  converterOff: string;
+  l298nSupplyLabel: string;
+  l298nChanALabel: string;
+  l298nChanBLabel: string;
+  l298nReg5vLabel: string;
+  l298nReg5vOn: string;
+  l298nReg5vOff: string;
 }
 
 export const MESSAGES: Record<Lang, Messages> = {
@@ -239,6 +254,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     partSearchEmpty: 'Tidak ada komponen yang cocok dengan pencarian.',
     catAll: 'Semua',
     catBreadboard: 'Breadboard',
+    catPower: 'Daya',
     catPassive: 'Pasif',
     catSensor: 'Sensor',
     catDisplay: 'Layar',
@@ -353,6 +369,20 @@ export const MESSAGES: Record<Lang, Messages> = {
     wiresCount: (n) => `${n} kabel`,
     clearSearch: 'Reset pencarian',
     resizeHandleLabel: 'Geser untuk ubah lebar panel kode dan kanvas',
+    batteryCellsLabel: 'Konfigurasi Seri 18650',
+    batteryVoltageLabel: 'Tegangan Baterai',
+    converterTargetLabel: 'Target Tegangan Keluar (Vout)',
+    converterInputLabel: 'Tegangan Masuk (Vin)',
+    converterOutputLabel: 'Tegangan Keluar (Vout)',
+    converterStatusLabel: 'Status Konverter',
+    converterActive: 'Aktif',
+    converterOff: 'Input Kurang / Mati',
+    l298nSupplyLabel: 'Suplai Motor (12V)',
+    l298nChanALabel: 'Output Motor A (OUT1-2)',
+    l298nChanBLabel: 'Output Motor B (OUT3-4)',
+    l298nReg5vLabel: 'Regulator 5V Onboard',
+    l298nReg5vOn: 'Jumper 5V: Aktif',
+    l298nReg5vOff: 'Jumper 5V: Nonaktif',
   },
   en: {
     appName: 'ArduSim',
@@ -415,6 +445,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     partSearchEmpty: 'No components match your search.',
     catAll: 'All',
     catBreadboard: 'Breadboard',
+    catPower: 'Power',
     catPassive: 'Passive',
     catSensor: 'Sensors',
     catDisplay: 'Displays',
@@ -529,5 +560,19 @@ export const MESSAGES: Record<Lang, Messages> = {
     wiresCount: (n) => `${n} ${n === 1 ? 'wire' : 'wires'}`,
     clearSearch: 'Reset search',
     resizeHandleLabel: 'Drag to resize code and canvas panels',
+    batteryCellsLabel: '18650 Series Pack',
+    batteryVoltageLabel: 'Battery Voltage',
+    converterTargetLabel: 'Target Output Voltage (Vout)',
+    converterInputLabel: 'Input Voltage (Vin)',
+    converterOutputLabel: 'Output Voltage (Vout)',
+    converterStatusLabel: 'Converter Status',
+    converterActive: 'Active',
+    converterOff: 'Undervoltage / Off',
+    l298nSupplyLabel: 'Motor Supply (12V)',
+    l298nChanALabel: 'Motor A Output (OUT1-2)',
+    l298nChanBLabel: 'Motor B Output (OUT3-4)',
+    l298nReg5vLabel: 'Onboard 5V Regulator',
+    l298nReg5vOn: '5V Jumper: Enabled',
+    l298nReg5vOff: '5V Jumper: Disabled',
   },
 };

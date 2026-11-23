@@ -791,6 +791,8 @@ export class AvrSimulator {
       buzzerHz,
       relayEnergized: solved.relayEnergized,
       motorStates: solved.motorStates,
+      converterStates: solved.converterStates,
+      l298nStates: solved.l298nStates,
       stepperStates,
       lcdDisplays,
       oledDisplays,
