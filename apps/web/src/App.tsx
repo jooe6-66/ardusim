@@ -278,12 +278,62 @@ export const App: React.FC = () => {
   const [overrideHex, setOverrideHex] = useState<string | null>(
     () => initialDraft?.overrideHex ?? null
   );
+  const [codePaneWidthPct, setCodePaneWidthPct] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('ardusim_split_pct'));
+    return Number.isFinite(saved) && saved >= 24 && saved <= 58 ? saved : 38;
+  });
+  const [resizingSplit, setResizingSplit] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const latestDraftRef = useRef({ diagram, overrideHex, hasManualLayout });
   latestDraftRef.current = { diagram, overrideHex, hasManualLayout };
   const t = MESSAGES[lang];
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMsg(null);
+      toastTimerRef.current = null;
+    }, 2300);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('ardusim_split_pct', String(codePaneWidthPct));
+  }, [codePaneWidthPct]);
+
+  const handleSplitterPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    setResizingSplit(true);
+
+    const onMove = (ev: PointerEvent) => {
+      const rect = workspaceRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setCodePaneWidthPct(Math.round(Math.min(58, Math.max(24, pct)) * 10) / 10);
+    };
+    const onUp = () => {
+      setResizingSplit(false);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -476,6 +526,13 @@ export const App: React.FC = () => {
     setOverrideHex(null);
     setDiagram((d) => ({ ...d, board: nextBoard, parts: nextParts, wires: nextWires }));
     setFitTrigger((n) => n + 1);
+    const nextLabel =
+      nextBoard === 'arduino-mega'
+        ? t.boardMega
+        : nextBoard === 'arduino-nano'
+          ? t.boardNano
+          : t.boardUno;
+    showToast(t.boardSwitchedToast(nextLabel));
   };
 
   const handleTidyWires = () => {
@@ -484,6 +541,7 @@ export const App: React.FC = () => {
       commitHistory(diagram.board, diagram.parts, diagram.wires);
       const tidiedWires = autoTidyWires(diagram.parts, diagram.wires, PART_MANIFEST_MAP);
       setDiagram((d) => ({ ...d, wires: tidiedWires }));
+      showToast(t.wiresTidiedToast);
       return;
     }
     if (diagram.parts.length <= 1 && diagram.wires.length === 0) return;
@@ -491,6 +549,7 @@ export const App: React.FC = () => {
     const tidied = autoTidyCircuit(diagram.parts, diagram.wires, PART_MANIFEST_MAP);
     setDiagram((d) => ({ ...d, parts: tidied.parts, wires: tidied.wires }));
     setFitTrigger((n) => n + 1);
+    showToast(t.wiresTidiedToast);
   };
 
   const startWithHex = useCallback(
@@ -637,6 +696,7 @@ export const App: React.FC = () => {
     setSelectedPartId(nextPart.id);
     setSelectedWireId(null);
     if (isDesktopViewport()) setInspectorOpen(true);
+    showToast(t.partAddedToast(manifest.name[lang]));
   };
 
   const handleMovePart = (
@@ -875,7 +935,10 @@ export const App: React.FC = () => {
             className="btn btn-compact"
             onClick={() => setProjectMenuOpen(true)}
           >
-            {t.fileMenu}
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 4.5C2 3.7 2.7 3 3.5 3H6.2L7.6 4.6H12.5C13.3 4.6 14 5.3 14 6.1V11.5C14 12.3 13.3 13 12.5 13H3.5C2.7 13 2 12.3 2 11.5V4.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+            <span>{t.fileMenu}</span>
           </button>
 
           <button
@@ -884,7 +947,10 @@ export const App: React.FC = () => {
             onClick={() => setTabletShowCode((v) => !v)}
             aria-pressed={tabletShowCode}
           >
-            {t.tabCode}
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M5.5 4.5L2 8L5.5 11.5M10.5 4.5L14 8L10.5 11.5M9 3L7 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{t.tabCode}</span>
           </button>
 
           <button
@@ -893,16 +959,31 @@ export const App: React.FC = () => {
             onClick={() => setInspectorOpen((v) => !v)}
             aria-pressed={inspectorOpen}
           >
-            {t.inspector}
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 4.5H13M3 8H13M3 11.5H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="6" cy="4.5" r="1.5" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+              <circle cx="10.5" cy="8" r="1.5" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+              <circle cx="7" cy="11.5" r="1.5" fill="var(--bg-elevated)" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+            <span>{t.inspector}</span>
           </button>
 
           <button
             type="button"
-            className={`btn ${running ? 'btn-accent' : 'btn-primary'}`}
+            className={`btn btn-run ${running ? 'btn-accent' : 'btn-primary'}`}
             onClick={handleRun}
             disabled={compiling}
           >
-            {compiling ? t.compiling : running ? t.stop : t.run}
+            {running ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="3.5" y="3.5" width="9" height="9" rx="1.6" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4.5 3L13 8L4.5 13V3Z" fill="currentColor" />
+              </svg>
+            )}
+            <span>{compiling ? t.compiling : running ? t.stop : t.run}</span>
           </button>
 
           <button
@@ -922,33 +1003,51 @@ export const App: React.FC = () => {
             aria-label={theme === 'light' ? t.themeDark : t.themeLight}
             title={theme === 'light' ? t.themeDark : t.themeLight}
           >
-            {theme === 'light' ? 'Dark' : 'Light'}
+            {theme === 'light' ? (
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M12.8 9.8A5.2 5.2 0 0 1 6.2 3.2A5.5 5.5 0 1 0 12.8 9.8Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="2.8" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M8 2V3.3M8 12.7V14M2 8H3.3M12.7 8H14M3.8 3.8L4.7 4.7M11.3 11.3L12.2 12.2M12.2 3.8L11.3 4.7M4.7 11.3L3.8 12.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            )}
+            <span className="theme-btn-label">{theme === 'light' ? 'Dark' : 'Light'}</span>
           </button>
         </div>
       </header>
 
-      {/* Compact Live Status Ribbon */}
-      <div className="status-strip" role="status" aria-live="polite">
+      {/* Compact Live Status Telemetry Ribbon */}
+      <div className={`status-strip ${compiling ? 'is-compiling' : ''}`} role="status" aria-live="polite">
         <div className="status-left">
           <span
             className={`status-dot ${compileError ? 'error' : running ? 'running' : ''}`}
             aria-hidden="true"
           />
-          <span>
-            {boardDisplayName} |{' '}
+          <span className="status-board-tag">{boardDisplayName}</span>
+          <span className="status-text">
             {compiling
               ? statusText || t.compiling
               : statusText || (running ? t.statusRunning : t.statusIdle)}
           </span>
         </div>
-        <span className="status-time">
-          {snapshot ? `${(snapshot.timeMs / 1000).toFixed(2)}s` : '0.00s'}
-        </span>
+        <div className="status-right">
+          <span className="status-metric">{t.partsCount(diagram.parts.length)}</span>
+          <span className="status-metric">{t.wiresCount(diagram.wires.length)}</span>
+          <span className="status-time">
+            {snapshot ? `${(snapshot.timeMs / 1000).toFixed(2)}s` : '0.00s'}
+          </span>
+        </div>
       </div>
 
       {/* Main Responsive Workspace + Adaptive Bottom/Side-Rail Navigation */}
       <div className="shell-body">
-        <main className="workspace">
+        <main
+          ref={workspaceRef}
+          className={`workspace ${resizingSplit ? 'is-resizing' : ''}`}
+          style={{ '--code-pane-width': `${codePaneWidthPct}%` } as React.CSSProperties}
+        >
           <section
             className={`pane-code ${mobileTab === 'circuit' ? 'mobile-hidden' : ''} ${!tabletShowCode ? 'tablet-hidden' : ''}`}
             aria-label="Code and Serial workspace"
@@ -984,6 +1083,34 @@ export const App: React.FC = () => {
               />
             </div>
           </section>
+
+          <div
+            className="pane-splitter"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t.resizeHandleLabel}
+            aria-valuemin={24}
+            aria-valuemax={58}
+            aria-valuenow={Math.round(codePaneWidthPct)}
+            tabIndex={0}
+            title={t.resizeHandleLabel}
+            onPointerDown={handleSplitterPointerDown}
+            onDoubleClick={() => setCodePaneWidthPct(38)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                setCodePaneWidthPct((v) => Math.max(24, v - 2));
+              } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                setCodePaneWidthPct((v) => Math.min(58, v + 2));
+              } else if (e.key === 'Home') {
+                e.preventDefault();
+                setCodePaneWidthPct(38);
+              }
+            }}
+          >
+            <span className="pane-splitter-grip" aria-hidden="true" />
+          </div>
 
           <section
             className={`pane-canvas ${mobileTab !== 'circuit' ? 'mobile-hidden' : ''}`}
@@ -1248,6 +1375,16 @@ export const App: React.FC = () => {
         lang={lang}
         t={t}
       />
+
+      {toastMsg && (
+        <div className="action-toast" role="status" aria-live="polite">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.6" />
+            <path d="M5.4 8.2L7.2 10L10.8 6.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>{toastMsg}</span>
+        </div>
+      )}
     </div>
   );
 };

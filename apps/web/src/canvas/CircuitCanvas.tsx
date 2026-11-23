@@ -1049,7 +1049,10 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
         <div className="toolbar-group toolbar-actions">
           <button type="button" className="btn btn-compact btn-primary" onClick={onOpenPartPicker}>
-            + {t.addPart}
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <span>{t.addPart}</span>
           </button>
           <button
             type="button"
@@ -1059,24 +1062,33 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
             title={hasManualLayout ? t.tidyWiresOnlyHint : t.tidyWiresHint}
           >
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2 4H6V12H14M2 12H4M9 4H14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             <span>{t.tidyWires}</span>
           </button>
-          <button type="button" className="btn btn-compact" onClick={onUndo} disabled={!canUndo} aria-label={t.undo} title={t.undo}>
-            ↶
+          <button type="button" className="btn btn-compact btn-icon" onClick={onUndo} disabled={!canUndo} aria-label={t.undo} title={t.undo}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M5.5 4.5L2.5 7.5L5.5 10.5M3 7.5H9.5C11.4 7.5 13 9 13 10.8C13 12 12.2 13 11 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </button>
-          <button type="button" className="btn btn-compact" onClick={onRedo} disabled={!canRedo} aria-label={t.redo} title={t.redo}>
-            ↷
+          <button type="button" className="btn btn-compact btn-icon" onClick={onRedo} disabled={!canRedo} aria-label={t.redo} title={t.redo}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M10.5 4.5L13.5 7.5L10.5 10.5M13 7.5H6.5C4.6 7.5 3 9 3 10.8C3 12 3.8 13 5 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </button>
-          <button type="button" className="btn btn-compact zoom-step-btn" onClick={() => zoomBy(1.18)} aria-label={t.zoomIn} title={t.zoomIn}>
-            +
+          <button type="button" className="btn btn-compact btn-icon zoom-step-btn" onClick={() => zoomBy(1.18)} aria-label={t.zoomIn} title={t.zoomIn}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
           </button>
-          <button type="button" className="btn btn-compact zoom-step-btn" onClick={() => zoomBy(0.85)} aria-label={t.zoomOut} title={t.zoomOut}>
-            -
+          <button type="button" className="btn btn-compact btn-icon zoom-step-btn" onClick={() => zoomBy(0.85)} aria-label={t.zoomOut} title={t.zoomOut}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3.5 8H12.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
           </button>
-          <button type="button" className="btn btn-compact" onClick={fitView} title={t.zoomFit}>
-            {t.zoomFit}
+          <button type="button" className="btn btn-compact zoom-fit-btn" onClick={fitView} title={t.zoomFit}>
+            <span className="zoom-readout">{Math.round(view.scale * 100)}%</span>
+            <span>{t.zoomFit}</span>
           </button>
         </div>
       </div>
@@ -1278,11 +1290,22 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
         {parts.length === 0 && (
           <div className="canvas-empty-overlay">
             <div className="canvas-empty-card">
+              <div className="canvas-empty-icon" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                  <rect x="4" y="6" width="20" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" />
+                  <circle cx="9.5" cy="14" r="2.2" stroke="currentColor" strokeWidth="1.6" />
+                  <circle cx="18.5" cy="14" r="2.2" fill="currentColor" />
+                  <path d="M11.7 14H16.3M9.5 6V3.5M14 6V3.5M18.5 6V3.5M9.5 22V24.5M14 22V24.5M18.5 22V24.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </div>
               <div className="canvas-empty-title">{t.canvasEmptyTitle}</div>
               <div className="canvas-empty-desc">{t.canvasEmptyDesc}</div>
               <div className="canvas-empty-actions">
                 <button type="button" className="btn btn-primary" onClick={onOpenPartPicker}>
-                  + {t.addPart}
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                  <span>{t.addPart}</span>
                 </button>
                 <button type="button" className="btn" onClick={onOpenFileMenu}>
                   {t.openFileMenu}
@@ -1309,39 +1332,45 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
               <>
                 <button
                   type="button"
-                  className={`btn btn-compact ${selectedPartObj.flipX ? 'btn-active' : ''}`}
+                  className={`btn btn-compact btn-icon ${selectedPartObj.flipX ? 'btn-active' : ''}`}
                   onClick={() => onFlipPart(selectedPartObj.id, 'x')}
                   aria-label={t.flipH}
                   title={t.flipH}
                 >
-                  ⇄
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 2.5V13.5M5.5 5.5L2.5 8L5.5 10.5M10.5 5.5L13.5 8L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
                 <button
                   type="button"
-                  className={`btn btn-compact ${selectedPartObj.flipY ? 'btn-active' : ''}`}
+                  className={`btn btn-compact btn-icon ${selectedPartObj.flipY ? 'btn-active' : ''}`}
                   onClick={() => onFlipPart(selectedPartObj.id, 'y')}
                   aria-label={t.flipV}
                   title={t.flipV}
                 >
-                  ⇅
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2.5 8H13.5M5.5 5.5L8 2.5L10.5 5.5M5.5 10.5L8 13.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
               </>
             )}
             {selectedPartObj && !isMcuBoardType(selectedPartObj.type) && (
               <button
                 type="button"
-                className="btn btn-compact"
+                className="btn btn-compact btn-icon"
                 onClick={() => onRotatePart(selectedPartObj.id)}
                 aria-label={t.rotate}
                 title={t.rotate}
               >
-                ↻
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M12.5 5.5A4.8 4.8 0 1 0 12.8 9.2M12.5 2.5V5.8H9.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             )}
             {canDeleteSelected && (
               <button
                 type="button"
-                className="btn btn-compact btn-danger"
+                className="btn btn-compact btn-icon btn-danger"
                 onClick={() => {
                   if (selectedPartObj) onDeletePart(selectedPartObj.id);
                   else if (selectedWireId) onDeleteWire(selectedWireId);
@@ -1349,7 +1378,9 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 aria-label={t.deleteSelected}
                 title={t.deleteSelected}
               >
-                ✕
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
               </button>
             )}
           </div>

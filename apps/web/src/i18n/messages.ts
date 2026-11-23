@@ -168,6 +168,13 @@ export interface Messages {
   load: string;
   remove: string;
   warningsTitle: string;
+  partAddedToast: (name: string) => string;
+  wiresTidiedToast: string;
+  boardSwitchedToast: (name: string) => string;
+  partsCount: (n: number) => string;
+  wiresCount: (n: number) => string;
+  clearSearch: string;
+  resizeHandleLabel: string;
 }
 
 export const MESSAGES: Record<Lang, Messages> = {
@@ -339,6 +346,13 @@ export const MESSAGES: Record<Lang, Messages> = {
     load: 'Buka',
     remove: 'Hapus',
     warningsTitle: 'Peringatan Rangkaian',
+    partAddedToast: (name) => `${name} ditambahkan ke kanvas`,
+    wiresTidiedToast: 'Jalur kabel dirapikan',
+    boardSwitchedToast: (name) => `Board diganti ke ${name}`,
+    partsCount: (n) => `${n} komponen`,
+    wiresCount: (n) => `${n} kabel`,
+    clearSearch: 'Reset pencarian',
+    resizeHandleLabel: 'Geser untuk ubah lebar panel kode dan kanvas',
   },
   en: {
     appName: 'ArduSim',
@@ -508,5 +522,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     load: 'Open',
     remove: 'Delete',
     warningsTitle: 'Circuit Warnings',
+    partAddedToast: (name) => `Added ${name} to canvas`,
+    wiresTidiedToast: 'Wires tidied',
+    boardSwitchedToast: (name) => `Switched board to ${name}`,
+    partsCount: (n) => `${n} ${n === 1 ? 'part' : 'parts'}`,
+    wiresCount: (n) => `${n} ${n === 1 ? 'wire' : 'wires'}`,
+    clearSearch: 'Reset search',
+    resizeHandleLabel: 'Drag to resize code and canvas panels',
   },
 };
