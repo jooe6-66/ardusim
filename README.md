@@ -52,6 +52,6 @@ npm run dev:web
 Buka `http://<IP-LAN-PC>:5173` di Chrome Android atau Safari iPhone/iPad, lalu gunakan **Add to Home Screen** untuk mode aplikasi penuh (PWA).
 
 ## Deploy Gratis (Rp 0 Tanpa Kartu Kredit)
-Ikuti panduan langkah demi langkah lengkap di [DEPLOY.md](./DEPLOY.md) (GitHub -> **Cloudflare Pages** untuk Frontend PWA + **Render Free Docker (`render.yaml`)** untuk Compiler API).
+Ikuti panduan langkah demi langkah lengkap di [DEPLOY.md](./DEPLOY.md) (GitHub -> **Cloudflare Pages** untuk Frontend PWA + **Hugging Face Spaces (Docker SDK)** untuk Compiler API).
 
 Lihat roadmap lengkap di [ROADMAP.md](./ROADMAP.md) dan panduan desain di [DESIGN.md](./DESIGN.md).
