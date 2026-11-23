@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BoardId,
   CircuitDiagram,
+  MultiMcuBoardSpec,
   PartInstance,
   PinRef,
   Point,
@@ -9,6 +10,7 @@ import {
   Wire,
   autoTidyCircuit,
   autoTidyWires,
+  autoWireFromSketch,
   buildNetlist,
   isMcuBoardType,
   parseIntelHex,
@@ -269,6 +271,7 @@ export const App: React.FC = () => {
   );
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
+  const [activeMcuId, setActiveMcuId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [partPickerOpen, setPartPickerOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -282,7 +285,7 @@ export const App: React.FC = () => {
     logs: string;
   } | null>(null);
   const [snapshot, setSnapshot] = useState<SimSnapshot | null>(null);
-  const [serialOutput, setSerialOutput] = useState('');
+  const [serialOutputs, setSerialOutputs] = useState<Record<string, string>>({});
   const [pressedButtons, setPressedButtons] = useState<Set<string>>(new Set());
   const [pressedKeypadKeys, setPressedKeypadKeys] = useState<Set<string>>(new Set());
   const [buzzerAudioEnabled, setBuzzerAudioEnabled] = useState(false);
@@ -446,7 +449,10 @@ export const App: React.FC = () => {
       if (msg.type === 'snapshot') {
         setSnapshot(msg.snapshot);
       } else if (msg.type === 'serial') {
-        setSerialOutput((prev) => (prev + msg.text).slice(-16000));
+        setSerialOutputs((prev) => ({
+          ...prev,
+          [msg.mcuPartId]: ((prev[msg.mcuPartId] ?? '') + msg.text).slice(-16000),
+        }));
       } else if (msg.type === 'error') {
         setRunning(false);
         setStatusText(msg.message);
@@ -514,21 +520,53 @@ export const App: React.FC = () => {
     setStatusText('');
   }, []);
 
+  const mcuParts = diagram.parts.filter((p) => isMcuBoardType(p.type));
+  const primaryMcu = mcuParts[0] ?? null;
+  const activeMcu = mcuParts.find((p) => p.id === activeMcuId) ?? primaryMcu;
+  const activeBoardId: BoardId =
+    activeMcu && isMcuBoardType(activeMcu.type) ? activeMcu.type : diagram.board;
+
+  const getMcuSketch = useCallback(
+    (mcu: PartInstance | null): string => {
+      if (!mcu) return diagram.sketch;
+      if (primaryMcu && mcu.id === primaryMcu.id) return diagram.sketch;
+      return typeof mcu.props.sketch === 'string' ? mcu.props.sketch : '';
+    },
+    [diagram.sketch, primaryMcu]
+  );
+
+  const activeSketch = getMcuSketch(activeMcu);
+
+  const updateActiveSketch = (nextSketch: string) => {
+    setOverrideHex(null);
+    if (!activeMcu || !primaryMcu || activeMcu.id === primaryMcu.id) {
+      setDiagram((d) => ({ ...d, sketch: nextSketch }));
+      return;
+    }
+    const targetId = activeMcu.id;
+    setDiagram((d) => ({
+      ...d,
+      parts: d.parts.map((p) =>
+        p.id === targetId ? { ...p, props: { ...p.props, sketch: nextSketch } } : p
+      ),
+    }));
+  };
+
   const handleBoardSwitch = (nextBoard: BoardId) => {
-    if (nextBoard === diagram.board && diagram.parts.some((p) => isMcuBoardType(p.type))) return;
+    if (activeMcu && activeMcu.type === nextBoard) return;
     handleStop();
     commitHistory(diagram.board, diagram.parts, diagram.wires);
     const nextManifest = PART_MANIFEST_MAP.get(nextBoard);
     const validPins = new Set(nextManifest?.pins.map((p) => p.id) ?? []);
 
-    const oldMcu = diagram.parts.find((p) => isMcuBoardType(p.type));
-    const mcuId = oldMcu?.id ?? 'mcu1';
-    const nextParts = oldMcu
-      ? diagram.parts.map((p) => (p.id === oldMcu.id ? { ...p, type: nextBoard } : p))
+    const targetMcu = activeMcu;
+    const mcuId = targetMcu?.id ?? 'mcu1';
+    const nextParts = targetMcu
+      ? diagram.parts.map((p) => (p.id === targetMcu.id ? { ...p, type: nextBoard } : p))
       : [createDefaultBoardPart(nextBoard), ...diagram.parts];
 
     // Keep wires whose endpoints remain valid on the new board, then re-tidy around new geometry
-    const filteredWires = oldMcu
+    const filteredWires = targetMcu
       ? diagram.wires.filter((w) => {
           if (w.from.partId === mcuId && !validPins.has(w.from.pinId)) return false;
           if (w.to.partId === mcuId && !validPins.has(w.to.pinId)) return false;
@@ -537,8 +575,14 @@ export const App: React.FC = () => {
       : diagram.wires;
     const nextWires = autoTidyWires(nextParts, filteredWires, PART_MANIFEST_MAP);
 
+    const isPrimary = !targetMcu || !primaryMcu || targetMcu.id === primaryMcu.id;
     setOverrideHex(null);
-    setDiagram((d) => ({ ...d, board: nextBoard, parts: nextParts, wires: nextWires }));
+    setDiagram((d) => ({
+      ...d,
+      board: isPrimary ? nextBoard : d.board,
+      parts: nextParts,
+      wires: nextWires,
+    }));
     setFitTrigger((n) => n + 1);
     const nextLabel =
       nextBoard === 'arduino-mega'
@@ -547,6 +591,26 @@ export const App: React.FC = () => {
           ? t.boardNano
           : t.boardUno;
     showToast(t.boardSwitchedToast(nextLabel));
+  };
+
+  const handleAutoWire = () => {
+    if (!activeMcu) return;
+    const res = autoWireFromSketch(
+      activeSketch,
+      activeMcu,
+      diagram.parts,
+      diagram.wires,
+      PART_MANIFEST_MAP
+    );
+    if (res.addedWires === 0) {
+      showToast(t.autoWireEmptyToast);
+      return;
+    }
+    commitHistory(diagram.board, diagram.parts, diagram.wires);
+    setHasManualLayout(false);
+    setDiagram((d) => ({ ...d, parts: res.parts, wires: res.wires }));
+    setFitTrigger((n) => n + 1);
+    showToast(t.autoWireToast(res.addedParts, res.addedWires));
   };
 
   const handleTidyWires = () => {
@@ -566,23 +630,22 @@ export const App: React.FC = () => {
     showToast(t.wiresTidiedToast);
   };
 
-  const startWithHex = useCallback(
-    (hex: string, statusLabel: string) => {
+  const startWithMcus = useCallback(
+    (mcus: MultiMcuBoardSpec[], statusLabel: string) => {
       setCompileError(null);
-      setSerialOutput('');
+      setSerialOutputs({});
       setRunning(true);
       setStatusText(statusLabel);
       workerRef.current?.postMessage({
         type: 'start',
-        board: diagram.board,
-        hex,
+        mcus,
         parts: diagram.parts,
         wires: diagram.wires,
         pressedButtons: Array.from(pressedButtons),
         pressedKeypadKeys: Array.from(pressedKeypadKeys),
       } satisfies WorkerInMessage);
     },
-    [diagram.board, diagram.parts, diagram.wires, pressedButtons, pressedKeypadKeys]
+    [diagram.parts, diagram.wires, pressedButtons, pressedKeypadKeys]
   );
 
   const handleRun = async () => {
@@ -591,50 +654,71 @@ export const App: React.FC = () => {
       return;
     }
 
+    const targets = mcuParts.length > 0 ? mcuParts : [createDefaultBoardPart(diagram.board)];
     setCompiling(true);
     setCompileError(null);
     setStatusText('');
 
     try {
-      if (overrideHex) {
-        startWithHex(overrideHex, t.statusOfflineCached);
-        return;
+      const compiled: MultiMcuBoardSpec[] = [];
+      let totalMs = 0;
+      let allCached = true;
+
+      for (let i = 0; i < targets.length; i++) {
+        const mcu = targets[i];
+        const board = isMcuBoardType(mcu.type) ? mcu.type : diagram.board;
+        const rawSketch = getMcuSketch(mcu);
+        const sketch = rawSketch.trim().length > 0 ? rawSketch : 'void setup() {}\nvoid loop() {}\n';
+
+        if (i === 0 && overrideHex) {
+          compiled.push({ partId: mcu.id, board, hex: overrideHex });
+          continue;
+        }
+
+        const matchedTpl = STARTER_TEMPLATES.find(
+          (tpl) =>
+            tpl.precompiledHex &&
+            tpl.diagram.board === board &&
+            tpl.diagram.sketch.trim() === sketch.trim()
+        );
+        if (matchedTpl?.precompiledHex) {
+          compiled.push({ partId: mcu.id, board, hex: matchedTpl.precompiledHex });
+          continue;
+        }
+
+        const cachedHex = await getCachedHex(board, sketch);
+        if (cachedHex) {
+          compiled.push({ partId: mcu.id, board, hex: cachedHex });
+          continue;
+        }
+
+        const res = await compileWithWakeRetry(board, sketch, (sec) =>
+          setStatusText(t.statusWaking(sec))
+        );
+
+        const data = await res.json();
+        if (!res.ok) {
+          setActiveMcuId(mcu.id);
+          setCompileError({
+            message:
+              targets.length > 1
+                ? `[MCU ${i + 1}] ${data.error || t.statusCompileError}`
+                : data.error || t.statusCompileError,
+            logs: data.logs || '',
+          });
+          setStatusText(t.statusCompileError);
+          setMobileTab('code');
+          return;
+        }
+
+        await saveCachedHex(board, sketch, data.hex);
+        compiled.push({ partId: mcu.id, board, hex: data.hex });
+        totalMs += data.durationMs ?? 0;
+        if (!data.cached) allCached = false;
       }
 
-      const matchedTpl = STARTER_TEMPLATES.find(
-        (tpl) =>
-          tpl.precompiledHex &&
-          tpl.diagram.board === diagram.board &&
-          tpl.diagram.sketch.trim() === diagram.sketch.trim()
-      );
-      if (matchedTpl?.precompiledHex) {
-        startWithHex(matchedTpl.precompiledHex, t.statusOfflineCached);
-        return;
-      }
-
-      const cachedHex = await getCachedHex(diagram.board, diagram.sketch);
-      if (cachedHex) {
-        startWithHex(cachedHex, t.statusOfflineCached);
-        return;
-      }
-
-      const res = await compileWithWakeRetry(diagram.board, diagram.sketch, (sec) =>
-        setStatusText(t.statusWaking(sec))
-      );
-
-      const data = await res.json();
-      if (!res.ok) {
-        setCompileError({
-          message: data.error || t.statusCompileError,
-          logs: data.logs || '',
-        });
-        setStatusText(t.statusCompileError);
-        setMobileTab('code');
-        return;
-      }
-
-      await saveCachedHex(diagram.board, diagram.sketch, data.hex);
-      startWithHex(data.hex, t.statusCompiled(data.durationMs ?? 0, Boolean(data.cached)));
+      const label = allCached ? t.statusOfflineCached : t.statusCompiled(totalMs, false);
+      startWithMcus(compiled, label);
     } catch {
       setCompileError({
         message: t.offlineNoCacheError,
@@ -649,6 +733,10 @@ export const App: React.FC = () => {
   const handleSelectPart = (id: string | null) => {
     setSelectedPartId(id);
     setSelectedWireId(null);
+    if (id) {
+      const part = diagram.parts.find((p) => p.id === id);
+      if (part && isMcuBoardType(part.type)) setActiveMcuId(part.id);
+    }
     if (!id) setInspectorOpen(false);
     else if (isDesktopViewport()) setInspectorOpen(true);
   };
@@ -666,6 +754,7 @@ export const App: React.FC = () => {
       setDiagram((d) => ({ ...d, parts: [...d.parts, nextPart] }));
       setSelectedPartId(nextPart.id);
       setSelectedWireId(null);
+      if (isMcuBoardType(nextPart.type)) setActiveMcuId(nextPart.id);
       if (isDesktopViewport()) setInspectorOpen(true);
       showToast(toastLabel);
     },
@@ -677,7 +766,7 @@ export const App: React.FC = () => {
     if (!manifest || isMcuBoardType(type)) return;
     const offset = (diagram.parts.length % 5) * 24;
     const baseX =
-      diagram.parts.length === 0 ? 168 : diagram.board === 'arduino-mega' ? 480 : 348;
+      diagram.parts.length === 0 ? 168 : activeBoardId === 'arduino-mega' ? 480 : 348;
     const nextPart: PartInstance = {
       id: makeId(type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
       type,
@@ -704,21 +793,25 @@ export const App: React.FC = () => {
   const handleCopyPart = useCallback(
     (partId: string) => {
       const target = diagram.parts.find((p) => p.id === partId);
-      if (!target || isMcuBoardType(target.type)) return;
+      if (!target) return;
       const manifest = PART_MANIFEST_MAP.get(target.type);
       if (!manifest) return;
+      const clonedProps = structuredClone(target.props);
+      if (isMcuBoardType(target.type)) {
+        clonedProps.sketch = getMcuSketch(target);
+      }
       setCopiedPart({
         type: target.type,
-        rotation: target.rotation,
+        rotation: isMcuBoardType(target.type) ? 0 : target.rotation,
         flipX: target.flipX,
         flipY: target.flipY,
-        props: structuredClone(target.props),
+        props: clonedProps,
         origin: { x: target.x, y: target.y },
       });
       pasteStepRef.current = 0;
       showToast(t.copiedToast(manifest.name[lang]));
     },
-    [diagram.parts, lang, showToast, t]
+    [diagram.parts, getMcuSketch, lang, showToast, t]
   );
 
   const handlePastePart = useCallback(
@@ -726,6 +819,8 @@ export const App: React.FC = () => {
       if (!copiedPart) return;
       const manifest = PART_MANIFEST_MAP.get(copiedPart.type);
       if (!manifest) return;
+      const isMcu = isMcuBoardType(copiedPart.type);
+      const stepDelta = isMcu ? 48 : 36;
       const pos = worldPos
         ? findFreeCloneCoords(
             diagram.parts,
@@ -734,19 +829,19 @@ export const App: React.FC = () => {
           )
         : (() => {
             pasteStepRef.current += 1;
-            const delta = pasteStepRef.current * 36;
+            const delta = pasteStepRef.current * stepDelta;
             return findFreeCloneCoords(
               diagram.parts,
-              copiedPart.origin.x + delta,
-              copiedPart.origin.y + delta
+              copiedPart.origin.x + (isMcu ? manifest.width + 48 : delta),
+              copiedPart.origin.y + (isMcu ? (pasteStepRef.current - 1) * 36 : delta)
             );
           })();
       const nextPart: PartInstance = {
-        id: makeId(copiedPart.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
+        id: makeId(isMcu ? 'mcu' : copiedPart.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
         type: copiedPart.type,
         x: pos.x,
         y: pos.y,
-        rotation: copiedPart.rotation,
+        rotation: isMcu ? 0 : copiedPart.rotation,
         flipX: copiedPart.flipX,
         flipY: copiedPart.flipY,
         props: structuredClone(copiedPart.props),
@@ -759,23 +854,32 @@ export const App: React.FC = () => {
   const handleDuplicatePart = useCallback(
     (partId: string) => {
       const target = diagram.parts.find((p) => p.id === partId);
-      if (!target || isMcuBoardType(target.type)) return;
+      if (!target) return;
       const manifest = PART_MANIFEST_MAP.get(target.type);
       if (!manifest) return;
-      const pos = findFreeCloneCoords(diagram.parts, target.x + 36, target.y + 36);
+      const isMcu = isMcuBoardType(target.type);
+      const pos = findFreeCloneCoords(
+        diagram.parts,
+        isMcu ? target.x + manifest.width + 48 : target.x + 36,
+        isMcu ? target.y : target.y + 36
+      );
+      const clonedProps = structuredClone(target.props);
+      if (isMcu) {
+        clonedProps.sketch = getMcuSketch(target);
+      }
       const nextPart: PartInstance = {
-        id: makeId(target.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
+        id: makeId(isMcu ? 'mcu' : target.type.replace(/[^a-z]/g, '').slice(0, 3) || 'p'),
         type: target.type,
         x: pos.x,
         y: pos.y,
-        rotation: target.rotation,
+        rotation: isMcu ? 0 : target.rotation,
         flipX: target.flipX,
         flipY: target.flipY,
-        props: structuredClone(target.props),
+        props: clonedProps,
       };
       insertPart(nextPart, t.duplicatedToast(manifest.name[lang]));
     },
-    [diagram.parts, insertPart, lang, t]
+    [diagram.parts, getMcuSketch, insertPart, lang, t]
   );
 
   // Desktop keyboard shortcuts for Copy / Paste / Duplicate (safely ignored inside editors/inputs)
@@ -799,7 +903,7 @@ export const App: React.FC = () => {
         const textSel = window.getSelection()?.toString();
         if (textSel) return;
         const target = diagram.parts.find((p) => p.id === selectedPartId);
-        if (target && !isMcuBoardType(target.type)) {
+        if (target) {
           e.preventDefault();
           handleCopyPart(selectedPartId);
         }
@@ -808,7 +912,7 @@ export const App: React.FC = () => {
         handlePastePart();
       } else if (key === 'd' && selectedPartId) {
         const target = diagram.parts.find((p) => p.id === selectedPartId);
-        if (target && !isMcuBoardType(target.type)) {
+        if (target) {
           e.preventDefault();
           handleDuplicatePart(selectedPartId);
         }
@@ -932,16 +1036,35 @@ export const App: React.FC = () => {
 
   const handleDeletePart = (partId: string) => {
     const target = diagram.parts.find((p) => p.id === partId);
-    if (target && isMcuBoardType(target.type)) return;
+    if (!target) return;
+    const isMcu = isMcuBoardType(target.type);
+    if (isMcu && mcuParts.length <= 1) return;
+    if (isMcu && running) handleStop();
     commitHistory(diagram.board, diagram.parts, diagram.wires);
-    setDiagram((d) => ({
-      ...d,
-      parts: d.parts.filter((p) => p.id !== partId),
-      wires: d.wires.filter((w) => w.from.partId !== partId && w.to.partId !== partId),
-    }));
+    setDiagram((d) => {
+      const remaining = d.parts.filter((p) => p.id !== partId);
+      const remainingWires = d.wires.filter((w) => w.from.partId !== partId && w.to.partId !== partId);
+      if (isMcu && primaryMcu && partId === primaryMcu.id) {
+        const nextPrimary = remaining.find((p) => isMcuBoardType(p.type));
+        if (nextPrimary && isMcuBoardType(nextPrimary.type)) {
+          const promotedSketch = typeof nextPrimary.props.sketch === 'string' ? nextPrimary.props.sketch : '';
+          return {
+            ...d,
+            board: nextPrimary.type,
+            sketch: promotedSketch,
+            parts: remaining,
+            wires: remainingWires,
+          };
+        }
+      }
+      return { ...d, parts: remaining, wires: remainingWires };
+    });
     if (selectedPartId === partId) {
       setSelectedPartId(null);
       setInspectorOpen(false);
+    }
+    if (activeMcuId === partId) {
+      setActiveMcuId(null);
     }
   };
 
@@ -1016,12 +1139,23 @@ export const App: React.FC = () => {
 
   const selectedPart = diagram.parts.find((p) => p.id === selectedPartId) ?? null;
   const selectedWire = diagram.wires.find((w) => w.id === selectedWireId) ?? null;
+  const shortBoardName = (b: string) =>
+    b === 'arduino-mega' ? 'Mega' : b === 'arduino-nano' ? 'Nano' : 'Uno';
   const boardDisplayName =
-    diagram.board === 'arduino-mega'
+    activeBoardId === 'arduino-mega'
       ? t.boardMega
-      : diagram.board === 'arduino-nano'
+      : activeBoardId === 'arduino-nano'
         ? t.boardNano
         : t.boardUno;
+  const activeMcuIdx = activeMcu ? mcuParts.findIndex((p) => p.id === activeMcu.id) : 0;
+  const activeMcuTag =
+    mcuParts.length > 1 && activeMcu
+      ? `MCU ${activeMcuIdx + 1} · ${shortBoardName(activeMcu.type)}`
+      : undefined;
+  const activeSerialText = activeMcu ? (serialOutputs[activeMcu.id] ?? '') : '';
+  const canDeleteSelectedPart = Boolean(
+    selectedPart && (!isMcuBoardType(selectedPart.type) || mcuParts.length > 1)
+  );
 
   return (
     <div className="app-shell">
@@ -1041,7 +1175,7 @@ export const App: React.FC = () => {
           <select
             className="select-input board-select"
             aria-label={t.boardLabel}
-            value={diagram.board}
+            value={activeBoardId}
             onChange={(e) => handleBoardSwitch(e.target.value as BoardId)}
           >
             <option value="arduino-uno">{t.boardUno}</option>
@@ -1177,13 +1311,30 @@ export const App: React.FC = () => {
             className={`pane-code ${mobileTab === 'circuit' ? 'mobile-hidden' : ''} ${!tabletShowCode ? 'tablet-hidden' : ''}`}
             aria-label="Code and Serial workspace"
           >
+            {mcuParts.length > 1 && (
+              <div className="mcu-switcher-bar" role="tablist" aria-label={t.boardLabel}>
+                {mcuParts.map((mcu, idx) => {
+                  const isAct = activeMcu?.id === mcu.id;
+                  return (
+                    <button
+                      key={mcu.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isAct}
+                      className={`mcu-tab-btn ${isAct ? 'is-active' : ''}`}
+                      onClick={() => setActiveMcuId(mcu.id)}
+                    >
+                      MCU {idx + 1} ({shortBoardName(mcu.type)})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <div className={mobileTab === 'serial' ? 'mobile-hidden editor-container' : 'editor-container'}>
               <CodeEditor
-                value={diagram.sketch}
-                onChange={(next) => {
-                  setOverrideHex(null);
-                  setDiagram((d) => ({ ...d, sketch: next }));
-                }}
+                value={activeSketch}
+                onChange={updateActiveSketch}
                 theme={theme}
                 compileError={compileError}
                 t={t}
@@ -1194,13 +1345,19 @@ export const App: React.FC = () => {
               className={`serial-pane-wrap ${mobileTab === 'code' ? 'mobile-hidden' : ''} ${mobileTab === 'serial' ? 'mobile-full' : ''}`}
             >
               <SerialMonitor
-                output={serialOutput}
+                output={activeSerialText}
                 running={running}
                 fullPane={mobileTab === 'serial'}
-                onClear={() => setSerialOutput('')}
+                boardTag={activeMcuTag}
+                onClear={() => {
+                  if (!activeMcu) return;
+                  setSerialOutputs((prev) => ({ ...prev, [activeMcu.id]: '' }));
+                }}
                 onSend={(text) => {
+                  if (!activeMcu) return;
                   workerRef.current?.postMessage({
                     type: 'serialInput',
+                    mcuPartId: activeMcu.id,
                     text,
                   } satisfies WorkerInMessage);
                 }}
@@ -1272,6 +1429,9 @@ export const App: React.FC = () => {
               onUndo={handleUndo}
               onRedo={handleRedo}
               onTidyWires={handleTidyWires}
+              onAutoWire={handleAutoWire}
+              canAutoWire={Boolean(activeMcu && activeSketch.trim().length > 0)}
+              activeMcuId={activeMcu?.id ?? null}
               hasManualLayout={hasManualLayout}
               fitTrigger={fitTrigger}
               inspectorOpen={inspectorOpen}
@@ -1307,6 +1467,7 @@ export const App: React.FC = () => {
               onRotatePart={handleRotatePart}
               onFlipPart={handleFlipPart}
               onDeletePart={handleDeletePart}
+              canDeletePart={canDeleteSelectedPart}
               onUpdateWireColor={handleUpdateWireColor}
               onResetWireShape={handleResetWireShape}
               onDeleteWire={handleDeleteWire}
@@ -1402,9 +1563,10 @@ export const App: React.FC = () => {
           setRedoStack([]);
           setSelectedPartId(null);
           setSelectedWireId(null);
+          setActiveMcuId(null);
           setInspectorOpen(false);
           setCompileError(null);
-          setSerialOutput('');
+          setSerialOutputs({});
           setFitTrigger((n) => n + 1);
         }}
         onSaveCurrent={async () => {
@@ -1428,6 +1590,8 @@ export const App: React.FC = () => {
           setRedoStack([]);
           setSelectedPartId(null);
           setSelectedWireId(null);
+          setActiveMcuId(null);
+          setSerialOutputs({});
           setCompileError(null);
           setFitTrigger((n) => n + 1);
         }}
@@ -1470,6 +1634,8 @@ export const App: React.FC = () => {
             setRedoStack([]);
             setSelectedPartId(null);
             setSelectedWireId(null);
+            setActiveMcuId(null);
+            setSerialOutputs({});
             setCompileError(null);
             setFitTrigger((n) => n + 1);
             return true;
@@ -1479,13 +1645,12 @@ export const App: React.FC = () => {
         }}
         onExportIno={() => {
           const slug = diagram.name.replace(/\s+/g, '-').toLowerCase() || 'sketch';
-          downloadText(`${slug}.ino`, diagram.sketch, 'text/plain;charset=utf-8');
+          downloadText(`${slug}.ino`, activeSketch, 'text/plain;charset=utf-8');
         }}
         onImportIno={(text) => {
           if (typeof text !== 'string' || text.trim().length === 0) return false;
           handleStop();
-          setDiagram((d) => ({ ...d, sketch: text, updatedAt: Date.now() }));
-          setOverrideHex(null);
+          updateActiveSketch(text);
           setCompileError(null);
           return true;
         }}

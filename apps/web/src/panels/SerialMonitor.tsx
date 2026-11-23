@@ -5,6 +5,7 @@ interface SerialMonitorProps {
   output: string;
   running: boolean;
   fullPane?: boolean;
+  boardTag?: string;
   onClear: () => void;
   onSend: (text: string) => void;
   t: Messages;
@@ -14,6 +15,7 @@ export const SerialMonitor: React.FC<SerialMonitorProps> = ({
   output,
   running,
   fullPane = false,
+  boardTag,
   onClear,
   onSend,
   t,
@@ -38,7 +40,10 @@ export const SerialMonitor: React.FC<SerialMonitorProps> = ({
   return (
     <section className={`serial-panel ${fullPane ? 'full-pane' : ''}`} aria-label={t.serialTitle}>
       <div className="panel-header">
-        <span>{t.serialTitle} (9600 baud)</span>
+        <span>
+          {t.serialTitle}
+          {boardTag ? ` (${boardTag})` : ' (9600 baud)'}
+        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 400 }}>
             <input

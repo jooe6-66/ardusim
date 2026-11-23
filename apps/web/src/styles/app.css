@@ -492,12 +492,14 @@ select:focus-visible,
 .toolbar-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   padding: 4px;
   background: var(--bg-subtle);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  flex-shrink: 0;
+  flex-shrink: 1;
+  max-width: 100%;
 }
 
 .toolbar-modes .btn-compact {
@@ -865,6 +867,46 @@ select:focus-visible,
   height: 1px;
   background: var(--border-subtle);
   margin: 3px 4px;
+}
+
+/* Multi-MCU active board switcher above Code Editor (only shown when 2+ MCUs exist) */
+.mcu-switcher-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.mcu-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.mcu-tab-btn:hover {
+  background: var(--primary-soft);
+}
+
+.mcu-tab-btn.is-active {
+  background: var(--primary);
+  border-color: var(--primary-edge);
+  color: var(--primary-fg);
 }
 
 /* =====================================================================
@@ -1650,6 +1692,7 @@ input[type='range']::-moz-range-thumb {
   .toolbar-actions {
     width: 100%;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 5px;
     padding: 3px;
@@ -1758,6 +1801,9 @@ input[type='range']::-moz-range-thumb {
   .context-menu-item {
     min-height: 44px;
     font-size: 14px;
+  }
+  .mcu-tab-btn {
+    min-height: 44px;
   }
   .context-menu-kbd {
     display: none;
@@ -1911,6 +1957,9 @@ input[type='range']::-moz-range-thumb {
   .context-menu-item {
     min-height: 44px;
     font-size: 14px;
+  }
+  .mcu-tab-btn {
+    min-height: 44px;
   }
   .context-menu-kbd {
     display: none;

@@ -198,6 +198,10 @@ export interface Messages {
   copiedToast: (name: string) => string;
   pastedToast: (name: string) => string;
   duplicatedToast: (name: string) => string;
+  autoWire: string;
+  autoWireHint: string;
+  autoWireToast: (parts: number, wires: number) => string;
+  autoWireEmptyToast: string;
 }
 
 export const MESSAGES: Record<Lang, Messages> = {
@@ -399,6 +403,13 @@ export const MESSAGES: Record<Lang, Messages> = {
     copiedToast: (name) => `${name} disalin`,
     pastedToast: (name) => `${name} ditempel ke kanvas`,
     duplicatedToast: (name) => `${name} diduplikat`,
+    autoWire: 'Auto-Wire',
+    autoWireHint: 'Otomatis tambahkan komponen dan sambungkan kabel sesuai kode sketch aktif',
+    autoWireToast: (parts, wires) =>
+      parts > 0
+        ? `Auto-Wire: +${parts} komponen, ${wires} kabel tersambung`
+        : `Auto-Wire: ${wires} kabel tersambung`,
+    autoWireEmptyToast: 'Tidak ada pin komponen terdeteksi di kode sketch',
   },
   en: {
     appName: 'ArduSim',
@@ -598,5 +609,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     copiedToast: (name) => `Copied ${name}`,
     pastedToast: (name) => `Pasted ${name} to canvas`,
     duplicatedToast: (name) => `Duplicated ${name}`,
+    autoWire: 'Auto-Wire',
+    autoWireHint: 'Auto-add detected components and wire pins from active sketch code',
+    autoWireToast: (parts, wires) =>
+      parts > 0
+        ? `Auto-Wire: +${parts} parts, ${wires} wires connected`
+        : `Auto-Wire: ${wires} wires connected`,
+    autoWireEmptyToast: 'No component pins detected in sketch code',
   },
 };

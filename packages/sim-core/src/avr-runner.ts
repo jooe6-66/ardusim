@@ -84,6 +84,7 @@ interface PinAccumulator {
 
 export interface AvrSimulationCallbacks {
   board?: BoardId;
+  mcuPartId?: string;
   onSerialByte?: (byte: number, port?: number) => void;
 }
 
@@ -112,6 +113,7 @@ interface AttachedPeripherals {
  */
 export class AvrSimulator {
   readonly board: BoardId;
+  readonly mcuPartId?: string;
   readonly cpu: CPU;
   readonly ports = new Map<AvrPortName, AVRIOPort>();
   readonly timers: AVRTimer[] = [];
@@ -123,8 +125,9 @@ export class AvrSimulator {
   readonly clock: AVRClock;
 
   private readonly solver = new PassiveCircuitSolver();
-  private readonly rxQueue: number[] = [];
+  private readonly rxQueues: number[][] = [];
   private readonly pinAcc = new Map<string, PinAccumulator>();
+  private externalSyncHandler?: () => void;
 
   private parts: PartInstance[] = [];
   private wires: Wire[] = [];
@@ -156,6 +159,7 @@ export class AvrSimulator {
 
   constructor(hex: string, callbacks: AvrSimulationCallbacks = {}) {
     this.board = callbacks.board ?? 'arduino-uno';
+    this.mcuPartId = callbacks.mcuPartId;
     const isMega = this.board === 'arduino-mega';
 
     const progMem = parseIntelHex(hex, isMega ? 262144 : 32768);
@@ -191,6 +195,7 @@ export class AvrSimulator {
         const u = new AVRUSART(this.cpu, cfg, UNO_CLOCK_HZ);
         u.onByteTransmit = (b) => callbacks.onSerialByte?.(b, idx);
         this.usarts.push(u);
+        this.rxQueues.push([]);
       });
       this.adc = new AVRADC(this.cpu, megaAdcConfig);
       this.twi = new AVRTWI(this.cpu, megaTwiConfig, UNO_CLOCK_HZ);
@@ -207,6 +212,7 @@ export class AvrSimulator {
       const u0 = new AVRUSART(this.cpu, usart0Config, UNO_CLOCK_HZ);
       u0.onByteTransmit = (b) => callbacks.onSerialByte?.(b, 0);
       this.usarts.push(u0);
+      this.rxQueues.push([]);
       this.adc = new AVRADC(this.cpu, adcConfig);
       this.twi = new AVRTWI(this.cpu, twiConfig, UNO_CLOCK_HZ);
       this.spi = new AVRSPI(this.cpu, spiConfig, UNO_CLOCK_HZ);
@@ -263,7 +269,8 @@ export class AvrSimulator {
           }
         }
         if (pullupChanged && this.parts.length > 0) {
-          this.syncExternalInputs();
+          if (this.externalSyncHandler) this.externalSyncHandler();
+          else this.syncExternalInputs();
         }
       });
     }
@@ -305,13 +312,42 @@ export class AvrSimulator {
     this.attached.btDevices.get(partId)?.dev.clearReceivedLog();
   }
 
+  private getMcuPart(): PartInstance | undefined {
+    if (this.mcuPartId) {
+      return this.parts.find((p) => p.id === this.mcuPartId && isMcuBoardType(p.type));
+    }
+    return this.parts.find((p) => isMcuBoardType(p.type));
+  }
+
+  /** Used by MultiMcuSimulator to bind this CPU onto a shared multi-board netlist. */
+  attachSharedCircuit(
+    parts: PartInstance[],
+    wires: Wire[],
+    manifests: Map<string, PartManifest>,
+    netlist: NetlistResult,
+    pressedButtons: Set<string>,
+    pressedKeypadKeys: Set<string>,
+    energizedRelays: Set<string>,
+    externalSyncHandler?: () => void
+  ): void {
+    this.parts = parts;
+    this.wires = wires;
+    this.manifests = manifests;
+    this.netlist = netlist;
+    this.pressedButtons = pressedButtons;
+    this.pressedKeypadKeys = pressedKeypadKeys;
+    this.energizedRelays = energizedRelays;
+    this.externalSyncHandler = externalSyncHandler;
+    this.bindSmartPeripherals();
+  }
+
   private findConnectedMcuPin(
     partId: string,
     pinId: string
   ): { mcuPartId: string; pinId: string; avrPort: AvrPortName; avrBit: number } | null {
     const net = this.netlist.pinToNet.get(`${partId}:${pinId}`);
     if (!net) return null;
-    const mcuPart = this.parts.find((p) => isMcuBoardType(p.type));
+    const mcuPart = this.getMcuPart();
     const mcuManifest = mcuPart ? this.manifests.get(mcuPart.type) : undefined;
     if (!mcuPart || !mcuManifest) return null;
 
@@ -355,7 +391,7 @@ export class AvrSimulator {
     };
 
     this.i2cBus.clear();
-    const mcuPart = this.parts.find((p) => isMcuBoardType(p.type));
+    const mcuPart = this.getMcuPart();
     const sdaPinId = mcuPart?.type === 'arduino-mega' ? '20' : 'A4';
     const sclPinId = mcuPart?.type === 'arduino-mega' ? '21' : 'A5';
     const mcuSdaNet = mcuPart ? this.netlist.pinToNet.get(`${mcuPart.id}:${sdaPinId}`) : undefined;
@@ -557,10 +593,17 @@ export class AvrSimulator {
     };
   }
 
-  queueSerialInput(text: string): void {
+  queueSerialInput(text: string, portIndex = 0): void {
+    const q = this.rxQueues[portIndex] ?? this.rxQueues[0];
+    if (!q) return;
     for (let i = 0; i < text.length; i++) {
-      this.rxQueue.push(text.charCodeAt(i) & 0xff);
+      q.push(text.charCodeAt(i) & 0xff);
     }
+  }
+
+  queueSerialByte(byte: number, portIndex = 0): void {
+    const q = this.rxQueues[portIndex];
+    if (q) q.push(byte & 0xff);
   }
 
   reset(): void {
@@ -568,7 +611,7 @@ export class AvrSimulator {
     for (const u of this.usarts) u.reset();
     this.spi.reset();
     this.solver.reset();
-    this.rxQueue.length = 0;
+    for (const q of this.rxQueues) q.length = 0;
     this.energizedRelays.clear();
     for (const acc of this.pinAcc.values()) {
       acc.highCycles = 0;
@@ -581,9 +624,9 @@ export class AvrSimulator {
     this.running = running;
   }
 
-  private collectMcuPins(dutyByPortBit?: Map<string, number>): McuPinState[] {
+  collectMcuPins(dutyByPortBit?: Map<string, number>): McuPinState[] {
     const mcuPins: McuPinState[] = [];
-    const mcuPart = this.parts.find((p) => isMcuBoardType(p.type));
+    const mcuPart = this.getMcuPart();
     const mcuManifest = mcuPart ? this.manifests.get(mcuPart.type) : undefined;
     if (!mcuPart || !mcuManifest) return mcuPins;
 
@@ -619,32 +662,35 @@ export class AvrSimulator {
     return mcuPins;
   }
 
-  private applySolvedInputs(netVoltages: Map<string, number>): Record<string, number> {
-    const pinVoltages: Record<string, number> = {};
-    const mcuPart = this.parts.find((p) => isMcuBoardType(p.type));
+  applyBoardVoltages(netVoltages: Map<string, number>, pinVoltages: Record<string, number>): void {
+    const mcuPart = this.getMcuPart();
     const mcuManifest = mcuPart ? this.manifests.get(mcuPart.type) : undefined;
+    if (!mcuPart || !mcuManifest) return;
 
-    if (mcuPart && mcuManifest) {
-      for (const pin of mcuManifest.pins) {
-        const key = `${mcuPart.id}:${pin.id}`;
-        const net = this.netlist.pinToNet.get(key);
-        const volts = net !== undefined ? (netVoltages.get(net) ?? 0) : 0;
-        pinVoltages[key] = volts;
+    for (const pin of mcuManifest.pins) {
+      const key = `${mcuPart.id}:${pin.id}`;
+      const net = this.netlist.pinToNet.get(key);
+      const volts = net !== undefined ? (netVoltages.get(net) ?? 0) : 0;
+      pinVoltages[key] = volts;
 
-        if (pin.avrPort && pin.avrBit !== undefined && !this.attached.drivenMcuPins.has(key)) {
-          const port = this.ports.get(pin.avrPort);
-          if (port) {
-            const st = port.pinState(pin.avrBit);
-            if (st === PinState.Input || st === PinState.InputPullUp) {
-              port.setPin(pin.avrBit, volts >= 2.5);
-            }
+      if (pin.avrPort && pin.avrBit !== undefined && !this.attached.drivenMcuPins.has(key)) {
+        const port = this.ports.get(pin.avrPort);
+        if (port) {
+          const st = port.pinState(pin.avrBit);
+          if (st === PinState.Input || st === PinState.InputPullUp) {
+            port.setPin(pin.avrBit, volts >= 2.5);
           }
         }
-        if (pin.adcChannel !== undefined) {
-          this.adc.channelValues[pin.adcChannel] = Math.min(5, Math.max(0, volts));
-        }
+      }
+      if (pin.adcChannel !== undefined) {
+        this.adc.channelValues[pin.adcChannel] = Math.min(5, Math.max(0, volts));
       }
     }
+  }
+
+  private applySolvedInputs(netVoltages: Map<string, number>): Record<string, number> {
+    const pinVoltages: Record<string, number> = {};
+    this.applyBoardVoltages(netVoltages, pinVoltages);
 
     for (const part of this.parts) {
       const manifest = this.manifests.get(part.type);
@@ -669,7 +715,8 @@ export class AvrSimulator {
     this.applySolvedInputs(solved.netVoltages);
   }
 
-  stepCycles(cyclesToRun: number): SimSnapshot {
+  /** Steps this CPU core for `cyclesToRun` cycles and returns accumulated per-pin PWM duty ratios. */
+  stepCpuSlice(cyclesToRun: number): { elapsedCycles: number; dutyByPortBit: Map<string, number> } {
     const startCycle = this.cpu.cycles;
     const targetCycle = startCycle + cyclesToRun;
 
@@ -701,9 +748,11 @@ export class AvrSimulator {
     }
 
     while (this.cpu.cycles < targetCycle) {
-      if (this.rxQueue.length > 0 && !this.usarts[0].rxBusy) {
-        const nextByte = this.rxQueue.shift()!;
-        this.usarts[0].writeByte(nextByte);
+      for (let uIdx = 0; uIdx < this.usarts.length; uIdx++) {
+        const q = this.rxQueues[uIdx];
+        if (q && q.length > 0 && !this.usarts[uIdx].rxBusy) {
+          this.usarts[uIdx].writeByte(q.shift()!);
+        }
       }
       avrInstruction(this.cpu);
       this.cpu.tick();
@@ -711,8 +760,6 @@ export class AvrSimulator {
 
     const endCycle = this.cpu.cycles;
     const elapsedCycles = Math.max(1, endCycle - startCycle);
-    const dtSeconds = elapsedCycles / UNO_CLOCK_HZ;
-
     const dutyByPortBit = new Map<string, number>();
     for (const [key, acc] of this.pinAcc.entries()) {
       if (acc.lastHigh) {
@@ -721,29 +768,10 @@ export class AvrSimulator {
       acc.lastCycle = endCycle;
       dutyByPortBit.set(key, Math.min(1, Math.max(0, acc.highCycles / elapsedCycles)));
     }
+    return { elapsedCycles, dutyByPortBit };
+  }
 
-    const mcuPins = this.collectMcuPins(dutyByPortBit);
-    let solved = this.solver.solve(this.parts, this.manifests, this.netlist, mcuPins, dtSeconds, true);
-
-    let relayChanged = false;
-    for (const [id, energized] of Object.entries(solved.relayEnergized)) {
-      if (energized !== this.energizedRelays.has(id)) {
-        relayChanged = true;
-        if (energized) this.energizedRelays.add(id);
-        else this.energizedRelays.delete(id);
-      }
-    }
-    if (relayChanged) {
-      this.netlist = buildNetlist(this.parts, this.wires, this.manifests, {
-        pressedButtons: this.pressedButtons,
-        pressedKeypadKeys: this.pressedKeypadKeys,
-        energizedRelays: this.energizedRelays,
-      });
-      solved = this.solver.solve(this.parts, this.manifests, this.netlist, mcuPins, dtSeconds, false);
-    }
-
-    const pinVoltages = this.applySolvedInputs(solved.netVoltages);
-
+  collectAttachedSnapshot(dutyByPortBit: Map<string, number>) {
     const servoAngles: Record<string, number> = {};
     for (const [id, dev] of this.attached.servos.entries()) servoAngles[id] = dev.angleDeg;
 
@@ -776,23 +804,337 @@ export class AvrSimulator {
     }
 
     const ledKey = this.board === 'arduino-mega' ? 'B:7' : 'B:5';
-    const d13Duty = dutyByPortBit.get(ledKey) ?? 0;
+    const onboardLed = (dutyByPortBit.get(ledKey) ?? 0) > 0.1;
+
+    return {
+      onboardLed,
+      servoAngles,
+      buzzerHz,
+      lcdDisplays,
+      oledDisplays,
+      max7219Displays,
+      neoPixelStrips,
+      stepperStates,
+      rtcTimes,
+      bluetoothLogs,
+    };
+  }
+
+  stepCycles(cyclesToRun: number): SimSnapshot {
+    const { elapsedCycles, dutyByPortBit } = this.stepCpuSlice(cyclesToRun);
+    const dtSeconds = elapsedCycles / UNO_CLOCK_HZ;
+
+    const mcuPins = this.collectMcuPins(dutyByPortBit);
+    let solved = this.solver.solve(this.parts, this.manifests, this.netlist, mcuPins, dtSeconds, true);
+
+    let relayChanged = false;
+    for (const [id, energized] of Object.entries(solved.relayEnergized)) {
+      if (energized !== this.energizedRelays.has(id)) {
+        relayChanged = true;
+        if (energized) this.energizedRelays.add(id);
+        else this.energizedRelays.delete(id);
+      }
+    }
+    if (relayChanged) {
+      this.netlist = buildNetlist(this.parts, this.wires, this.manifests, {
+        pressedButtons: this.pressedButtons,
+        pressedKeypadKeys: this.pressedKeypadKeys,
+        energizedRelays: this.energizedRelays,
+      });
+      solved = this.solver.solve(this.parts, this.manifests, this.netlist, mcuPins, dtSeconds, false);
+    }
+
+    const pinVoltages = this.applySolvedInputs(solved.netVoltages);
+    const attached = this.collectAttachedSnapshot(dutyByPortBit);
+    const mcuPart = this.getMcuPart();
 
     return {
       running: this.running,
       timeMs: Math.round((this.cpu.cycles / UNO_CLOCK_HZ) * 1000),
-      onboardLed: d13Duty > 0.1,
+      onboardLed: attached.onboardLed,
+      onboardLeds: mcuPart ? { [mcuPart.id]: attached.onboardLed } : undefined,
       ledStates: solved.ledStates,
       rgbLedStates: solved.rgbLedStates,
       sevenSegStates: solved.sevenSegStates,
       capacitorVoltages: solved.capacitorVoltages,
       diodeConducting: solved.diodeConducting,
-      servoAngles,
-      buzzerHz,
+      servoAngles: attached.servoAngles,
+      buzzerHz: attached.buzzerHz,
       relayEnergized: solved.relayEnergized,
       motorStates: solved.motorStates,
       converterStates: solved.converterStates,
       l298nStates: solved.l298nStates,
+      stepperStates: attached.stepperStates,
+      lcdDisplays: attached.lcdDisplays,
+      oledDisplays: attached.oledDisplays,
+      max7219Displays: attached.max7219Displays,
+      neoPixelStrips: attached.neoPixelStrips,
+      rtcTimes: attached.rtcTimes,
+      bluetoothLogs: attached.bluetoothLogs,
+      pinVoltages,
+      warnings: solved.warnings,
+    };
+  }
+}
+
+export interface MultiMcuBoardSpec {
+  partId: string;
+  board: BoardId;
+  hex: string;
+}
+
+const UART_PORT_PINS: Record<BoardId, Array<{ tx: string; rx: string }>> = {
+  'arduino-uno': [{ tx: '1', rx: '0' }],
+  'arduino-nano': [{ tx: '1', rx: '0' }],
+  'arduino-mega': [
+    { tx: '1', rx: '0' },
+    { tx: '18', rx: '19' },
+    { tx: '16', rx: '17' },
+    { tx: '14', rx: '15' },
+  ],
+};
+
+/**
+ * Runs 2+ AVR MCU boards in lockstep over a single shared electrical netlist and nodal solver.
+ * Bridges cross-board GPIO (digital/analog/PWM), power rails, and hardware UART TX -> RX links.
+ */
+export class MultiMcuSimulator {
+  private readonly sims = new Map<string, AvrSimulator>();
+  private readonly solver = new PassiveCircuitSolver();
+  private readonly uartRoutes = new Map<string, Array<{ targetId: string; targetPort: number }>>();
+  private parts: PartInstance[] = [];
+  private wires: Wire[] = [];
+  private manifests: Map<string, PartManifest> = new Map();
+  private netlist: NetlistResult = { pinToNet: new Map(), netToPins: new Map() };
+  private pressedButtons = new Set<string>();
+  private pressedKeypadKeys = new Set<string>();
+  private energizedRelays = new Set<string>();
+  private running = false;
+
+  constructor(
+    specs: MultiMcuBoardSpec[],
+    callbacks: { onSerialByte?: (mcuPartId: string, byte: number, port?: number) => void } = {}
+  ) {
+    for (const spec of specs) {
+      const sim = new AvrSimulator(spec.hex, {
+        board: spec.board,
+        mcuPartId: spec.partId,
+        onSerialByte: (byte, port = 0) => {
+          callbacks.onSerialByte?.(spec.partId, byte, port);
+          const links = this.uartRoutes.get(`${spec.partId}:${port}`);
+          if (links) {
+            for (const link of links) {
+              this.sims.get(link.targetId)?.queueSerialByte(byte, link.targetPort);
+            }
+          }
+        },
+      });
+      this.sims.set(spec.partId, sim);
+    }
+  }
+
+  setRunning(running: boolean): void {
+    this.running = running;
+    for (const sim of this.sims.values()) sim.setRunning(running);
+  }
+
+  queueSerialInput(mcuPartId: string, text: string): void {
+    this.sims.get(mcuPartId)?.queueSerialInput(text);
+  }
+
+  sendBluetoothMessage(partId: string, text: string): void {
+    for (const sim of this.sims.values()) sim.sendBluetoothMessage(partId, text);
+  }
+
+  clearBluetoothLog(partId: string): void {
+    for (const sim of this.sims.values()) sim.clearBluetoothLog(partId);
+  }
+
+  setCircuit(
+    parts: PartInstance[],
+    wires: Wire[],
+    manifests: Map<string, PartManifest>,
+    pressedButtons: Set<string> = new Set(),
+    pressedKeypadKeys: Set<string> = new Set()
+  ): void {
+    this.parts = parts;
+    this.wires = wires;
+    this.manifests = manifests;
+    this.pressedButtons = new Set(pressedButtons);
+    this.pressedKeypadKeys = new Set(pressedKeypadKeys);
+    this.netlist = buildNetlist(parts, wires, manifests, {
+      pressedButtons: this.pressedButtons,
+      pressedKeypadKeys: this.pressedKeypadKeys,
+      energizedRelays: this.energizedRelays,
+    });
+    this.rebuildUartRoutes();
+    const syncAll = () => this.syncSharedInputs();
+    for (const sim of this.sims.values()) {
+      sim.attachSharedCircuit(
+        this.parts,
+        this.wires,
+        this.manifests,
+        this.netlist,
+        this.pressedButtons,
+        this.pressedKeypadKeys,
+        this.energizedRelays,
+        syncAll
+      );
+    }
+    this.syncSharedInputs();
+  }
+
+  private rebuildUartRoutes(): void {
+    this.uartRoutes.clear();
+    const rxByNet = new Map<string, Array<{ partId: string; portIdx: number }>>();
+    for (const [partId, sim] of this.sims.entries()) {
+      const ports = UART_PORT_PINS[sim.board];
+      ports.forEach((p, idx) => {
+        const net = this.netlist.pinToNet.get(`${partId}:${p.rx}`);
+        if (!net) return;
+        const list = rxByNet.get(net) ?? [];
+        list.push({ partId, portIdx: idx });
+        rxByNet.set(net, list);
+      });
+    }
+    for (const [partId, sim] of this.sims.entries()) {
+      const ports = UART_PORT_PINS[sim.board];
+      ports.forEach((p, idx) => {
+        const net = this.netlist.pinToNet.get(`${partId}:${p.tx}`);
+        if (!net) return;
+        const receivers = (rxByNet.get(net) ?? []).filter((r) => r.partId !== partId);
+        if (receivers.length > 0) {
+          this.uartRoutes.set(
+            `${partId}:${idx}`,
+            receivers.map((r) => ({ targetId: r.partId, targetPort: r.portIdx }))
+          );
+        }
+      });
+    }
+  }
+
+  private syncSharedInputs(): void {
+    if (this.parts.length === 0) return;
+    const allMcuPins: McuPinState[] = [];
+    for (const sim of this.sims.values()) {
+      allMcuPins.push(...sim.collectMcuPins());
+    }
+    const solved = this.solver.solve(this.parts, this.manifests, this.netlist, allMcuPins, 0.01, false);
+    const pinVoltages: Record<string, number> = {};
+    for (const sim of this.sims.values()) {
+      sim.applyBoardVoltages(solved.netVoltages, pinVoltages);
+    }
+  }
+
+  stepCycles(cyclesToRun: number): SimSnapshot {
+    // Interleave small slices (~65k cycles ~= 4ms) so cross-board digital/analog signals propagate cleanly
+    const sliceCount = Math.max(1, Math.min(8, Math.ceil(cyclesToRun / 65_000)));
+    const sliceCycles = Math.max(1, Math.round(cyclesToRun / sliceCount));
+
+    const dutyAccum = new Map<string, Map<string, number>>();
+    for (const id of this.sims.keys()) dutyAccum.set(id, new Map());
+
+    let lastSolved = this.solver.solve(this.parts, this.manifests, this.netlist, [], 1e-6, false);
+
+    for (let s = 0; s < sliceCount; s++) {
+      const allMcuPins: McuPinState[] = [];
+      let sliceElapsed = sliceCycles;
+      for (const [id, sim] of this.sims.entries()) {
+        const { elapsedCycles, dutyByPortBit } = sim.stepCpuSlice(sliceCycles);
+        sliceElapsed = elapsedCycles;
+        const acc = dutyAccum.get(id)!;
+        for (const [k, v] of dutyByPortBit.entries()) {
+          acc.set(k, (acc.get(k) ?? 0) + v / sliceCount);
+        }
+        allMcuPins.push(...sim.collectMcuPins(dutyByPortBit));
+      }
+
+      const dtSeconds = sliceElapsed / UNO_CLOCK_HZ;
+      lastSolved = this.solver.solve(this.parts, this.manifests, this.netlist, allMcuPins, dtSeconds, true);
+
+      let relayChanged = false;
+      for (const [id, energized] of Object.entries(lastSolved.relayEnergized)) {
+        if (energized !== this.energizedRelays.has(id)) {
+          relayChanged = true;
+          if (energized) this.energizedRelays.add(id);
+          else this.energizedRelays.delete(id);
+        }
+      }
+      if (relayChanged) {
+        this.netlist = buildNetlist(this.parts, this.wires, this.manifests, {
+          pressedButtons: this.pressedButtons,
+          pressedKeypadKeys: this.pressedKeypadKeys,
+          energizedRelays: this.energizedRelays,
+        });
+        this.rebuildUartRoutes();
+        lastSolved = this.solver.solve(this.parts, this.manifests, this.netlist, allMcuPins, dtSeconds, false);
+      }
+
+      const tmpV: Record<string, number> = {};
+      for (const sim of this.sims.values()) {
+        sim.applyBoardVoltages(lastSolved.netVoltages, tmpV);
+      }
+    }
+
+    const pinVoltages: Record<string, number> = {};
+    const onboardLeds: Record<string, boolean> = {};
+    const servoAngles: Record<string, number> = {};
+    const buzzerHz: Record<string, number> = {};
+    const lcdDisplays: Record<string, LcdDisplayState> = {};
+    const oledDisplays: Record<string, OledDisplayState> = {};
+    const max7219Displays: Record<string, Max7219State> = {};
+    const neoPixelStrips: Record<string, Array<[number, number, number]>> = {};
+    const stepperStates: Record<string, StepperVisualState> = {};
+    const rtcTimes: Record<string, string> = {};
+    const bluetoothLogs: Record<string, string> = {};
+    let maxCycles = 0;
+
+    for (const [id, sim] of this.sims.entries()) {
+      maxCycles = Math.max(maxCycles, sim.cpu.cycles);
+      sim.applyBoardVoltages(lastSolved.netVoltages, pinVoltages);
+      const att = sim.collectAttachedSnapshot(dutyAccum.get(id)!);
+      onboardLeds[id] = att.onboardLed;
+      Object.assign(servoAngles, att.servoAngles);
+      Object.assign(buzzerHz, att.buzzerHz);
+      Object.assign(lcdDisplays, att.lcdDisplays);
+      Object.assign(oledDisplays, att.oledDisplays);
+      Object.assign(max7219Displays, att.max7219Displays);
+      Object.assign(neoPixelStrips, att.neoPixelStrips);
+      Object.assign(stepperStates, att.stepperStates);
+      Object.assign(rtcTimes, att.rtcTimes);
+      Object.assign(bluetoothLogs, att.bluetoothLogs);
+    }
+
+    for (const part of this.parts) {
+      const manifest = this.manifests.get(part.type);
+      if (!manifest || part.type === 'breadboard-half') continue;
+      for (const pin of manifest.pins) {
+        const key = `${part.id}:${pin.id}`;
+        const net = this.netlist.pinToNet.get(key);
+        if (net !== undefined) {
+          const v = lastSolved.netVoltages.get(net);
+          if (v !== undefined) pinVoltages[key] = v;
+        }
+      }
+    }
+
+    const firstId = this.sims.keys().next().value;
+    return {
+      running: this.running,
+      timeMs: Math.round((maxCycles / UNO_CLOCK_HZ) * 1000),
+      onboardLed: firstId ? Boolean(onboardLeds[firstId]) : false,
+      onboardLeds,
+      ledStates: lastSolved.ledStates,
+      rgbLedStates: lastSolved.rgbLedStates,
+      sevenSegStates: lastSolved.sevenSegStates,
+      capacitorVoltages: lastSolved.capacitorVoltages,
+      diodeConducting: lastSolved.diodeConducting,
+      servoAngles,
+      buzzerHz,
+      relayEnergized: lastSolved.relayEnergized,
+      motorStates: lastSolved.motorStates,
+      converterStates: lastSolved.converterStates,
+      l298nStates: lastSolved.l298nStates,
       stepperStates,
       lcdDisplays,
       oledDisplays,
@@ -801,7 +1143,7 @@ export class AvrSimulator {
       rtcTimes,
       bluetoothLogs,
       pinVoltages,
-      warnings: solved.warnings,
+      warnings: lastSolved.warnings,
     };
   }
 }

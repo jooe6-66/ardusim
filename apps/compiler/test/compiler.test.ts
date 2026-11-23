@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AvrSimulator, parseIntelHex } from '@ardusim/sim-core';
+import { AvrSimulator, MultiMcuSimulator, PartInstance, PartManifest, Wire, parseIntelHex } from '@ardusim/sim-core';
 import { CompilerService } from '../src/runner.js';
 import { createCompilerServer } from '../src/server.js';
 
@@ -254,4 +254,100 @@ test('HTTP API ignores invalid non-numeric env overrides for rate limit and conc
     if (prevQueue === undefined) delete process.env.MAX_QUEUE_SIZE;
     else process.env.MAX_QUEUE_SIZE = prevQueue;
   }
+});
+
+test('MultiMcuSimulator runs two Arduino Uno boards communicating over UART TX->RX and digital GPIO', async () => {
+  const masterSketch = `
+    void setup() {
+      Serial.begin(9600);
+      pinMode(7, OUTPUT);
+      digitalWrite(7, HIGH);
+      delay(5);
+      Serial.println("PING");
+    }
+    void loop() {}
+  `;
+  const slaveSketch = `
+    String rx = "";
+    void setup() {
+      Serial.begin(9600);
+      pinMode(8, INPUT);
+      pinMode(13, OUTPUT);
+    }
+    void loop() {
+      while (Serial.available() > 0) {
+        char c = Serial.read();
+        if (c == '\\n') {
+          rx.trim();
+          int sig = digitalRead(8);
+          if (rx == "PING" && sig == HIGH) {
+            digitalWrite(13, HIGH);
+            Serial.println("SLAVE_ACK_OK");
+          }
+          rx = "";
+        } else {
+          rx += c;
+        }
+      }
+    }
+  `;
+
+  const compiler = new CompilerService();
+  const [mRes, sRes] = await Promise.all([
+    compiler.compile('arduino-uno', masterSketch),
+    compiler.compile('arduino-uno', slaveSketch),
+  ]);
+
+  const unoManifest: PartManifest = {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Uno', en: 'Uno' },
+    defaultProps: {},
+    pins: [
+      { id: '0', label: 'RX', x: 0, y: 0, type: 'uart', avrPort: 'D', avrBit: 0 },
+      { id: '1', label: 'TX', x: 0, y: 0, type: 'uart', avrPort: 'D', avrBit: 1 },
+      { id: '7', label: 'D7', x: 0, y: 0, type: 'digital', avrPort: 'D', avrBit: 7 },
+      { id: '8', label: 'D8', x: 0, y: 0, type: 'digital', avrPort: 'B', avrBit: 0 },
+      { id: '13', label: 'D13', x: 0, y: 0, type: 'digital', avrPort: 'B', avrBit: 5 },
+      { id: 'GND.1', label: 'GND', x: 0, y: 0, type: 'gnd', fixedVoltage: 0 },
+    ],
+  };
+  const manifests = new Map<string, PartManifest>([['arduino-uno', unoManifest]]);
+  const parts: PartInstance[] = [
+    { id: 'mcu1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'mcu2', type: 'arduino-uno', x: 400, y: 0, rotation: 0, props: {} },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'mcu1', pinId: '1' }, to: { partId: 'mcu2', pinId: '0' }, color: '#2563EB' },
+    { id: 'w2', from: { partId: 'mcu1', pinId: '7' }, to: { partId: 'mcu2', pinId: '8' }, color: '#16A34A' },
+    { id: 'w3', from: { partId: 'mcu1', pinId: 'GND.1' }, to: { partId: 'mcu2', pinId: 'GND.1' }, color: '#1F2937' },
+  ];
+
+  const logs: Record<string, string> = { mcu1: '', mcu2: '' };
+  const sim = new MultiMcuSimulator(
+    [
+      { partId: 'mcu1', board: 'arduino-uno', hex: mRes.hex },
+      { partId: 'mcu2', board: 'arduino-uno', hex: sRes.hex },
+    ],
+    {
+      onSerialByte: (id, byte) => {
+        logs[id] = (logs[id] ?? '') + String.fromCharCode(byte);
+      },
+    }
+  );
+  sim.setCircuit(parts, wires, manifests);
+  sim.setRunning(true);
+
+  let slaveLedOn = false;
+  for (let step = 0; step < 30; step++) {
+    const snap = sim.stepCycles(400_000);
+    if (snap.onboardLeds?.mcu2) slaveLedOn = true;
+    if (logs.mcu2.includes('SLAVE_ACK_OK') && slaveLedOn) break;
+  }
+
+  assert.ok(logs.mcu1.includes('PING'), `Expected Master Serial PING, got: ${JSON.stringify(logs.mcu1)}`);
+  assert.ok(logs.mcu2.includes('SLAVE_ACK_OK'), `Expected Slave Serial SLAVE_ACK_OK, got: ${JSON.stringify(logs.mcu2)}`);
+  assert.equal(slaveLedOn, true, 'Expected Slave onboard D13 LED to turn ON after receiving PING + D8 HIGH');
 });

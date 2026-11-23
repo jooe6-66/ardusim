@@ -72,6 +72,7 @@ interface PartInspectorProps {
   onRotatePart: (partId: string) => void;
   onFlipPart: (partId: string, axis: 'x' | 'y') => void;
   onDeletePart: (partId: string) => void;
+  canDeletePart: boolean;
   onUpdateWireColor: (wireId: string, color: string) => void;
   onResetWireShape: (wireId: string) => void;
   onDeleteWire: (wireId: string) => void;
@@ -96,6 +97,7 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
   onRotatePart,
   onFlipPart,
   onDeletePart,
+  canDeletePart,
   onUpdateWireColor,
   onResetWireShape,
   onDeleteWire,
@@ -1207,17 +1209,21 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
           </button>
         </div>
 
-        {/* Common rotation & deletion controls (MCU boards are switched from top-left selector) */}
-        {!isMcuBoardType(part.type) && (
+        {/* Common rotation & deletion controls (MCU boards can be deleted when 2+ boards exist) */}
+        {(!isMcuBoardType(part.type) || canDeletePart) && (
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onRotatePart(part.id)}>
-              <ActionIcon name="rotate" />
-              <span>{t.rotate}</span>
-            </button>
-            <button type="button" className="btn btn-danger" style={{ flex: 1 }} onClick={() => onDeletePart(part.id)}>
-              <ActionIcon name="trash" />
-              <span>{t.deleteSelected}</span>
-            </button>
+            {!isMcuBoardType(part.type) && (
+              <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onRotatePart(part.id)}>
+                <ActionIcon name="rotate" />
+                <span>{t.rotate}</span>
+              </button>
+            )}
+            {canDeletePart && (
+              <button type="button" className="btn btn-danger" style={{ flex: 1 }} onClick={() => onDeletePart(part.id)}>
+                <ActionIcon name="trash" />
+                <span>{t.deleteSelected}</span>
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -8,3 +8,4 @@ export * from './devices/i2c-devices.js';
 export * from './devices/timing-devices.js';
 export * from './devices/spi-uart-devices.js';
 export * from './avr-runner.js';
+export * from './auto-wire.js';

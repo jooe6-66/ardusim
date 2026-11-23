@@ -61,6 +61,9 @@ interface CircuitCanvasProps {
   onUndo: () => void;
   onRedo: () => void;
   onTidyWires: () => void;
+  onAutoWire: () => void;
+  canAutoWire: boolean;
+  activeMcuId: string | null;
   hasManualLayout: boolean;
   fitTrigger: number;
   inspectorOpen: boolean;
@@ -195,6 +198,9 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   onUndo,
   onRedo,
   onTidyWires,
+  onAutoWire,
+  canAutoWire,
+  activeMcuId,
   hasManualLayout,
   fitTrigger,
   inspectorOpen,
@@ -470,6 +476,14 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       maxX = Math.max(maxX, cx + halfW);
       maxY = Math.max(maxY, cy + halfH);
     }
+    for (const rw of routedWires) {
+      for (const pt of rw.pts) {
+        minX = Math.min(minX, pt.x);
+        minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x);
+        maxY = Math.max(maxY, pt.y);
+      }
+    }
     const pad = 48;
     const contentW = Math.max(200, maxX - minX + pad * 2);
     const contentH = Math.max(200, maxY - minY + pad * 2);
@@ -477,7 +491,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
     const x = Math.round((rect.width - (maxX - minX) * scale) / 2 - minX * scale);
     const y = Math.round((rect.height - (maxY - minY) * scale) / 2 - minY * scale);
     setView({ x, y, scale });
-  }, [parts]);
+  }, [parts, routedWires]);
 
   useEffect(() => {
     setWireDraft(null);
@@ -1023,13 +1037,13 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
       }
     }
 
-    // 2. Delete mode: unambiguous wire vs deletable component (MCU board is protected)
+    // 2. Delete mode: unambiguous wire vs deletable component (keep at least 1 MCU board)
     if (mode === 'delete') {
       if (hitWire && (!hitNonBbPart || hitWire.dist <= (isTouch ? 9 : 6))) {
         onDeleteWire(hitWire.wire.id);
         return;
       }
-      if (hitPart && !isMcuBoardType(hitPart.type)) {
+      if (hitPart && canDeletePartObj(hitPart)) {
         onDeletePart(hitPart.id);
         return;
       }
@@ -1415,6 +1429,17 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
               ? t.runningAutoHint
               : t.modeAutoHint;
 
+  const mcuParts = useMemo(() => parts.filter((p) => isMcuBoardType(p.type)), [parts]);
+  const mcuIndexMap = useMemo(() => {
+    const m = new Map<string, number>();
+    mcuParts.forEach((p, idx) => m.set(p.id, idx));
+    return m;
+  }, [mcuParts]);
+  const canDeletePartObj = useCallback(
+    (p: PartInstance) => !isMcuBoardType(p.type) || mcuParts.length > 1,
+    [mcuParts.length]
+  );
+
   const selectedPartObj = useMemo(
     () => parts.find((p) => p.id === selectedPartId) ?? null,
     [parts, selectedPartId]
@@ -1429,7 +1454,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
   }, [selectedPartObj, selectedWireId, lang, t.modeWire]);
 
   const canDeleteSelected =
-    Boolean(selectedWireId) || (Boolean(selectedPartObj) && !isMcuBoardType(selectedPartObj!.type));
+    Boolean(selectedWireId) || (Boolean(selectedPartObj) && canDeletePartObj(selectedPartObj!));
 
   const ctxPartObj = useMemo(
     () => (contextMenu?.partId ? parts.find((p) => p.id === contextMenu.partId) ?? null : null),
@@ -1500,6 +1525,16 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
           <button type="button" className="btn btn-compact btn-primary" onClick={onOpenPartPicker}>
             <ActionIcon name="plus" size={14} />
             <span>{t.addPart}</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-compact"
+            onClick={onAutoWire}
+            disabled={!canAutoWire}
+            title={t.autoWireHint}
+          >
+            <ActionIcon name="wand" />
+            <span>{t.autoWire}</span>
           </button>
           <button
             type="button"
@@ -1598,6 +1633,12 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                     pressed={pressedButtons.has(part.id)}
                     pressedKeypadKeys={pressedKeypadKeys}
                     selected={selectedPartId === part.id || contextMenu?.partId === part.id}
+                    boardBadge={
+                      mcuParts.length > 1 && mcuIndexMap.has(part.id)
+                        ? `MCU ${mcuIndexMap.get(part.id)! + 1}`
+                        : undefined
+                    }
+                    isActiveMcu={mcuParts.length > 1 && part.id === activeMcuId}
                   />
                 </g>
               );
@@ -1821,36 +1862,32 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
 
             {ctxPartObj ? (
               <>
-                {!ctxPartIsMcu && (
-                  <>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="context-menu-item"
-                      onClick={() => {
-                        onCopyPart(ctxPartObj.id);
-                        setContextMenu(null);
-                      }}
-                    >
-                      <ActionIcon name="copy" />
-                      <span className="context-menu-label">{t.ctxCopy}</span>
-                      <span className="context-menu-kbd">Ctrl+C</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="context-menu-item"
-                      onClick={() => {
-                        onDuplicatePart(ctxPartObj.id);
-                        setContextMenu(null);
-                      }}
-                    >
-                      <ActionIcon name="duplicate" />
-                      <span className="context-menu-label">{t.ctxDuplicate}</span>
-                      <span className="context-menu-kbd">Ctrl+D</span>
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onCopyPart(ctxPartObj.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <ActionIcon name="copy" />
+                  <span className="context-menu-label">{t.ctxCopy}</span>
+                  <span className="context-menu-kbd">Ctrl+C</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onDuplicatePart(ctxPartObj.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <ActionIcon name="duplicate" />
+                  <span className="context-menu-label">{t.ctxDuplicate}</span>
+                  <span className="context-menu-kbd">Ctrl+D</span>
+                </button>
 
                 {hasCopiedPart && (
                   <button
@@ -1868,9 +1905,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                   </button>
                 )}
 
-                {(!ctxPartIsMcu || hasCopiedPart) && (
-                  <div className="context-menu-divider" role="separator" />
-                )}
+                <div className="context-menu-divider" role="separator" />
 
                 {!ctxPartIsMcu && (
                   <button
@@ -1927,7 +1962,7 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                   <span className="context-menu-label">{t.inspector}</span>
                 </button>
 
-                {!ctxPartIsMcu && (
+                {canDeletePartObj(ctxPartObj) && (
                   <>
                     <div className="context-menu-divider" role="separator" />
                     <button
@@ -1973,6 +2008,19 @@ export const CircuitCanvas: React.FC<CircuitCanvasProps> = ({
                 >
                   <ActionIcon name="plus" />
                   <span className="context-menu-label">{t.partPickerTitle}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="context-menu-item"
+                  disabled={!canAutoWire}
+                  onClick={() => {
+                    onAutoWire();
+                    setContextMenu(null);
+                  }}
+                >
+                  <ActionIcon name="wand" />
+                  <span className="context-menu-label">{t.autoWire}</span>
                 </button>
                 <button
                   type="button"

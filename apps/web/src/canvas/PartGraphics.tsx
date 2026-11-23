@@ -19,6 +19,8 @@ interface PartGraphicsProps {
   pressed: boolean;
   pressedKeypadKeys?: Set<string>;
   selected: boolean;
+  boardBadge?: string;
+  isActiveMcu?: boolean;
 }
 
 const LED_PALETTE: Record<LedColor, { off: string; on: string; glow: string }> = {
@@ -61,8 +63,38 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   pressed,
   pressedKeypadKeys,
   selected,
+  boardBadge,
+  isActiveMcu,
 }) => {
   const strokeSel = selected ? 'var(--primary)' : 'transparent';
+  const boardLedOn = Boolean(snapshot?.onboardLeds?.[part.id] ?? snapshot?.onboardLed);
+
+  const renderMcuBadge = (x: number, y: number) =>
+    boardBadge ? (
+      <g>
+        <rect
+          x={x}
+          y={y}
+          width={38}
+          height={14}
+          rx={3}
+          fill={isActiveMcu ? '#F59E0B' : '#0F172A'}
+          stroke={isActiveMcu ? '#FEF3C7' : '#475569'}
+          strokeWidth={0.9}
+        />
+        <text
+          x={x + 19}
+          y={y + 10}
+          textAnchor="middle"
+          fill={isActiveMcu ? '#111827' : '#F1F5F9'}
+          fontSize={7.5}
+          fontWeight={700}
+          fontFamily="var(--font-mono)"
+        >
+          {boardBadge}
+        </text>
+      </g>
+    ) : null;
 
   const oledPath = useMemo(() => {
     if (part.type !== 'oled-ssd1306') return '';
@@ -74,7 +106,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   // --- MCU BOARDS ---
   if (part.type === 'arduino-uno') {
     const running = Boolean(snapshot?.running);
-    const lOn = Boolean(snapshot?.onboardLed);
+    const lOn = boardLedOn;
     return (
       <g>
         <rect
@@ -84,9 +116,10 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
           height={188}
           rx={6}
           fill="#0B5F66"
-          stroke={selected ? 'var(--accent)' : '#073F44'}
-          strokeWidth={selected ? 2.5 : 1.5}
+          stroke={selected || isActiveMcu ? 'var(--accent)' : '#073F44'}
+          strokeWidth={selected || isActiveMcu ? 2.5 : 1.5}
         />
+        {renderMcuBadge(42, 168)}
         <rect x={0} y={32} width={34} height={42} rx={3} fill="#CBD5E1" stroke="#475569" strokeWidth={1.2} />
         <rect x={4} y={38} width={22} height={30} rx={2} fill="#94A3B8" />
         <rect x={2} y={132} width={36} height={32} rx={3} fill="#1E293B" stroke="#0F172A" strokeWidth={1.2} />
@@ -146,7 +179,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
 
   if (part.type === 'arduino-nano') {
     const running = Boolean(snapshot?.running);
-    const lOn = Boolean(snapshot?.onboardLed);
+    const lOn = boardLedOn;
     return (
       <g>
         <rect
@@ -156,9 +189,10 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
           height={88}
           rx={5}
           fill="#0B5F66"
-          stroke={selected ? 'var(--accent)' : '#073F44'}
-          strokeWidth={selected ? 2.5 : 1.5}
+          stroke={selected || isActiveMcu ? 'var(--accent)' : '#073F44'}
+          strokeWidth={selected || isActiveMcu ? 2.5 : 1.5}
         />
+        {renderMcuBadge(14, -16)}
         {/* Mini-USB connector */}
         <rect x={0} y={30} width={28} height={36} rx={3} fill="#CBD5E1" stroke="#475569" strokeWidth={1.2} />
         <rect x={4} y={35} width={18} height={26} rx={2} fill="#94A3B8" />
@@ -209,7 +243,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
 
   if (part.type === 'arduino-mega') {
     const running = Boolean(snapshot?.running);
-    const lOn = Boolean(snapshot?.onboardLed);
+    const lOn = boardLedOn;
     return (
       <g>
         <rect
@@ -219,9 +253,10 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
           height={208}
           rx={6}
           fill="#0B5F66"
-          stroke={selected ? 'var(--accent)' : '#073F44'}
-          strokeWidth={selected ? 2.5 : 1.5}
+          stroke={selected || isActiveMcu ? 'var(--accent)' : '#073F44'}
+          strokeWidth={selected || isActiveMcu ? 2.5 : 1.5}
         />
+        {renderMcuBadge(46, 184)}
         <rect x={0} y={32} width={34} height={42} rx={3} fill="#CBD5E1" stroke="#475569" strokeWidth={1.2} />
         <rect x={4} y={38} width={22} height={30} rx={2} fill="#94A3B8" />
         <rect x={2} y={148} width={36} height={32} rx={3} fill="#1E293B" stroke="#0F172A" strokeWidth={1.2} />

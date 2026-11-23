@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   autoTidyCircuit,
   autoTidyWires,
+  autoWireFromSketch,
   buildNetlist,
   getPinWorldPosition,
   moveWireCorner,
@@ -742,4 +743,154 @@ test('pickWireColor keeps signal colors for passive/digital +/- pins and unwired
     0.01
   );
   assert.equal(lowOut.relayEnergized.rel1, true);
+});
+
+test('autoWireFromSketch auto-adds detected components, wires pins accurately, and preserves manual power parts', () => {
+  const m = new Map<string, PartManifest>(testManifests);
+  // Expand Uno pins for full auto-wire coverage
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Arduino Uno', en: 'Arduino Uno' },
+    defaultProps: {},
+    pins: [
+      { id: '5V', label: '5V', x: 100, y: 180, type: 'power', fixedVoltage: 5.0 },
+      { id: '3.3V', label: '3.3V', x: 88, y: 180, type: 'power', fixedVoltage: 3.3 },
+      { id: 'GND.1', label: 'GND', x: 80, y: 14, type: 'gnd', fixedVoltage: 0 },
+      { id: 'GND.2', label: 'GND', x: 120, y: 180, type: 'gnd', fixedVoltage: 0 },
+      { id: '2', label: 'D2', x: 240, y: 14, type: 'digital' },
+      { id: '6', label: 'D6', x: 192, y: 14, type: 'digital' },
+      { id: '7', label: 'D7', x: 180, y: 14, type: 'digital' },
+      { id: '9', label: 'D9', x: 156, y: 14, type: 'digital' },
+      { id: '13', label: 'D13', x: 110, y: 14, type: 'digital' },
+      { id: 'A0', label: 'A0', x: 200, y: 180, type: 'analog' },
+      { id: 'A4', label: 'A4', x: 248, y: 180, type: 'i2c' },
+      { id: 'A5', label: 'A5', x: 260, y: 180, type: 'i2c' },
+    ],
+  });
+  m.set('lcd-1602-i2c', {
+    type: 'lcd-1602-i2c',
+    category: 'display',
+    width: 196,
+    height: 92,
+    name: { id: 'LCD', en: 'LCD' },
+    defaultProps: { i2cAddress: 0x27 },
+    pins: [
+      { id: 'GND', label: 'GND', x: 6, y: 26, type: 'gnd' },
+      { id: 'VCC', label: 'VCC', x: 6, y: 38, type: 'power' },
+      { id: 'SDA', label: 'SDA', x: 6, y: 50, type: 'i2c' },
+      { id: 'SCL', label: 'SCL', x: 6, y: 62, type: 'i2c' },
+    ],
+  });
+  m.set('dht22', {
+    type: 'dht22',
+    category: 'sensor',
+    width: 68,
+    height: 76,
+    name: { id: 'DHT', en: 'DHT' },
+    defaultProps: { model: 'DHT22' },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 22, y: 72, type: 'power' },
+      { id: 'DATA', label: 'DATA', x: 34, y: 72, type: 'digital' },
+      { id: 'GND', label: 'GND', x: 46, y: 72, type: 'gnd' },
+    ],
+  });
+  m.set('servo', {
+    type: 'servo',
+    category: 'motor',
+    width: 96,
+    height: 76,
+    name: { id: 'Servo', en: 'Servo' },
+    defaultProps: {},
+    pins: [
+      { id: 'GND', label: 'GND', x: 24, y: 72, type: 'gnd' },
+      { id: 'VCC', label: 'VCC', x: 36, y: 72, type: 'power' },
+      { id: 'SIG', label: 'SIG', x: 48, y: 72, type: 'digital' },
+    ],
+  });
+  m.set('potentiometer', {
+    type: 'potentiometer',
+    category: 'input',
+    width: 64,
+    height: 68,
+    name: { id: 'Pot', en: 'Pot' },
+    defaultProps: { value: 10, unit: 'kohm', position: 0.5 },
+    pins: [
+      { id: 'GND', label: 'GND', x: 20, y: 64, type: 'gnd' },
+      { id: 'SIG', label: 'SIG', x: 32, y: 64, type: 'analog' },
+      { id: 'VCC', label: 'VCC', x: 44, y: 64, type: 'power' },
+    ],
+  });
+  m.set('pushbutton', {
+    type: 'pushbutton',
+    category: 'input',
+    width: 56,
+    height: 56,
+    name: { id: 'Btn', en: 'Btn' },
+    defaultProps: {},
+    pins: [
+      { id: '1a', label: '1a', x: 10, y: 10, type: 'passive' },
+      { id: '2a', label: '2a', x: 46, y: 10, type: 'passive' },
+    ],
+  });
+  m.set('battery-18650', {
+    type: 'battery-18650',
+    category: 'power',
+    width: 116,
+    height: 64,
+    name: { id: 'Bat', en: 'Bat' },
+    defaultProps: { cells: 2, voltage: 7.4 },
+    pins: [
+      { id: '+', label: '+', x: 110, y: 20, type: 'power' },
+      { id: '-', label: '-', x: 110, y: 44, type: 'gnd' },
+    ],
+  });
+
+  const sketch = `
+    #include <LiquidCrystal_I2C.h>
+    #include <DHT.h>
+    #include <Servo.h>
+    #define DHT_PIN 2
+    #define BTN_PIN 7
+    const int GREEN_LED = 13;
+    const int POT_PIN = A0;
+    LiquidCrystal_I2C lcd(0x3F, 16, 2);
+    DHT dht(DHT_PIN, DHT11);
+    Servo gateServo;
+    void setup() {
+      Serial.begin(9600);
+      pinMode(GREEN_LED, OUTPUT);
+      pinMode(BTN_PIN, INPUT_PULLUP);
+      gateServo.attach(9);
+    }
+    void loop() {
+      int v = analogRead(POT_PIN);
+      if (digitalRead(BTN_PIN) == LOW) digitalWrite(GREEN_LED, HIGH);
+    }
+  `;
+
+  const mcu: PartInstance = { id: 'mcu1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+  const manualBat: PartInstance = { id: 'bat1', type: 'battery-18650', x: 500, y: 40, rotation: 0, props: { cells: 2, voltage: 7.4 } };
+
+  const res = autoWireFromSketch(sketch, mcu, [mcu, manualBat], [], m);
+  assert.ok(res.addedParts >= 6, `Expected >= 6 auto-added parts, got ${res.addedParts}`);
+  assert.ok(res.addedWires >= 14, `Expected >= 14 auto-added wires, got ${res.addedWires}`);
+  // Manual battery preserved untouched
+  assert.ok(res.parts.some((p) => p.id === 'bat1'), 'Manual battery must stay on canvas');
+  const lcd = res.parts.find((p) => p.type === 'lcd-1602-i2c');
+  assert.equal(lcd?.props.i2cAddress, 0x3f);
+  const dht = res.parts.find((p) => p.type === 'dht22');
+  assert.equal(dht?.props.model, 'DHT11');
+  const led = res.parts.find((p) => p.type === 'led');
+  assert.equal(led?.props.color, 'green');
+  assert.ok(res.parts.some((p) => p.type === 'resistor'), 'LED should include series resistor');
+  assert.ok(res.parts.some((p) => p.type === 'servo'));
+  assert.ok(res.parts.some((p) => p.type === 'potentiometer'));
+  assert.ok(res.parts.some((p) => p.type === 'pushbutton'));
+  // Verify Servo SIG connected to D9 and DHT DATA connected to D2
+  const servo = res.parts.find((p) => p.type === 'servo')!;
+  assert.ok(res.wires.some((w) => w.from.pinId === '9' && w.to.partId === servo.id && w.to.pinId === 'SIG'));
+  assert.ok(res.wires.some((w) => w.from.pinId === '2' && w.to.partId === dht!.id && w.to.pinId === 'DATA'));
 });

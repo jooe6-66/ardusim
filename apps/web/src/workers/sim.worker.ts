@@ -1,6 +1,8 @@
 import {
   AvrSimulator,
   BoardId,
+  MultiMcuBoardSpec,
+  MultiMcuSimulator,
   PartInstance,
   SimSnapshot,
   UNO_CLOCK_HZ,
@@ -11,8 +13,7 @@ import { PART_MANIFEST_MAP } from '@ardusim/parts';
 export type WorkerInMessage =
   | {
       type: 'start';
-      board: BoardId;
-      hex: string;
+      mcus: MultiMcuBoardSpec[];
       parts: PartInstance[];
       wires: Wire[];
       pressedButtons: string[];
@@ -25,31 +26,36 @@ export type WorkerInMessage =
       pressedButtons: string[];
       pressedKeypadKeys: string[];
     }
-  | { type: 'serialInput'; text: string }
+  | { type: 'serialInput'; mcuPartId: string; text: string }
   | { type: 'btInput'; partId: string; text: string }
   | { type: 'btClear'; partId: string }
   | { type: 'stop' };
 
 export type WorkerOutMessage =
   | { type: 'snapshot'; snapshot: SimSnapshot }
-  | { type: 'serial'; text: string }
+  | { type: 'serial'; mcuPartId: string; text: string }
   | { type: 'error'; message: string };
 
-let simulator: AvrSimulator | null = null;
+let singleSim: AvrSimulator | null = null;
+let multiSim: MultiMcuSimulator | null = null;
 let timerId: ReturnType<typeof setInterval> | null = null;
 let lastWallTime = 0;
-let serialChunk = '';
+const serialChunks = new Map<string, string>();
 
 function stopLoop(): void {
   if (timerId !== null) {
     clearInterval(timerId);
     timerId = null;
   }
-  if (simulator) {
-    simulator.setRunning(false);
-    simulator = null;
+  if (singleSim) {
+    singleSim.setRunning(false);
+    singleSim = null;
   }
-  serialChunk = '';
+  if (multiSim) {
+    multiSim.setRunning(false);
+    multiSim = null;
+  }
+  serialChunks.clear();
 }
 
 self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
@@ -61,8 +67,9 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
   }
 
   if (msg.type === 'updateCircuit') {
-    if (simulator) {
-      simulator.setCircuit(
+    const active = multiSim ?? singleSim;
+    if (active) {
+      active.setCircuit(
         msg.parts,
         msg.wires,
         PART_MANIFEST_MAP,
@@ -74,60 +81,81 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
   }
 
   if (msg.type === 'serialInput') {
-    if (simulator) simulator.queueSerialInput(msg.text);
+    if (multiSim) multiSim.queueSerialInput(msg.mcuPartId, msg.text);
+    else if (singleSim) singleSim.queueSerialInput(msg.text);
     return;
   }
 
   if (msg.type === 'btInput') {
-    if (simulator) simulator.sendBluetoothMessage(msg.partId, msg.text);
+    (multiSim ?? singleSim)?.sendBluetoothMessage(msg.partId, msg.text);
     return;
   }
 
   if (msg.type === 'btClear') {
-    if (simulator) simulator.clearBluetoothLog(msg.partId);
+    (multiSim ?? singleSim)?.clearBluetoothLog(msg.partId);
     return;
   }
 
   if (msg.type === 'start') {
     stopLoop();
+    if (msg.mcus.length === 0) return;
     try {
-      simulator = new AvrSimulator(msg.hex, {
-        board: msg.board,
-        onSerialByte: (byte) => {
-          serialChunk += String.fromCharCode(byte);
-        },
-      });
-      simulator.setCircuit(
-        msg.parts,
-        msg.wires,
-        PART_MANIFEST_MAP,
-        new Set(msg.pressedButtons),
-        new Set(msg.pressedKeypadKeys)
-      );
-      simulator.setRunning(true);
+      const appendByte = (mcuPartId: string, byte: number) => {
+        serialChunks.set(mcuPartId, (serialChunks.get(mcuPartId) ?? '') + String.fromCharCode(byte));
+      };
+
+      if (msg.mcus.length === 1) {
+        const m = msg.mcus[0];
+        singleSim = new AvrSimulator(m.hex, {
+          board: m.board as BoardId,
+          mcuPartId: m.partId,
+          onSerialByte: (byte) => appendByte(m.partId, byte),
+        });
+        singleSim.setCircuit(
+          msg.parts,
+          msg.wires,
+          PART_MANIFEST_MAP,
+          new Set(msg.pressedButtons),
+          new Set(msg.pressedKeypadKeys)
+        );
+        singleSim.setRunning(true);
+      } else {
+        multiSim = new MultiMcuSimulator(msg.mcus, {
+          onSerialByte: (mcuPartId, byte) => appendByte(mcuPartId, byte),
+        });
+        multiSim.setCircuit(
+          msg.parts,
+          msg.wires,
+          PART_MANIFEST_MAP,
+          new Set(msg.pressedButtons),
+          new Set(msg.pressedKeypadKeys)
+        );
+        multiSim.setRunning(true);
+      }
+
       lastWallTime = performance.now();
 
       timerId = setInterval(() => {
-        if (!simulator) return;
+        const active = multiSim ?? singleSim;
+        if (!active) return;
         const now = performance.now();
         const dtMs = Math.min(45, Math.max(8, now - lastWallTime));
         lastWallTime = now;
 
         const cycles = Math.round((dtMs / 1000) * UNO_CLOCK_HZ);
-        const snapshot = simulator.stepCycles(cycles);
+        const snapshot = active.stepCycles(cycles);
 
-        if (serialChunk.length > 0) {
-          const out: WorkerOutMessage = { type: 'serial', text: serialChunk };
-          self.postMessage(out);
-          serialChunk = '';
+        for (const [mcuPartId, text] of serialChunks.entries()) {
+          if (text.length > 0) {
+            self.postMessage({ type: 'serial', mcuPartId, text } satisfies WorkerOutMessage);
+          }
         }
-        const snapMsg: WorkerOutMessage = { type: 'snapshot', snapshot };
-        self.postMessage(snapMsg);
+        serialChunks.clear();
+        self.postMessage({ type: 'snapshot', snapshot } satisfies WorkerOutMessage);
       }, 33);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start AVR simulation';
-      const errMsg: WorkerOutMessage = { type: 'error', message };
-      self.postMessage(errMsg);
+      self.postMessage({ type: 'error', message } satisfies WorkerOutMessage);
       stopLoop();
     }
   }

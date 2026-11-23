@@ -11,7 +11,8 @@ export type ActionIconName =
   | 'copy'
   | 'duplicate'
   | 'paste'
-  | 'fit';
+  | 'fit'
+  | 'wand';
 
 export const ActionIcon: React.FC<{ name: ActionIconName; size?: number }> = ({ name, size = 15 }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -63,6 +64,12 @@ export const ActionIcon: React.FC<{ name: ActionIconName; size?: number }> = ({ 
     )}
     {name === 'fit' && (
       <path d="M2.5 6V3.5C2.5 2.95 2.95 2.5 3.5 2.5H6M10 2.5H12.5C13.05 2.5 13.5 2.95 13.5 3.5V6M13.5 10V12.5C13.5 13.05 13.05 13.5 12.5 13.5H10M6 13.5H3.5C2.95 13.5 2.5 13.05 2.5 12.5V10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    )}
+    {name === 'wand' && (
+      <>
+        <path d="M2.8 13.2L9.4 6.6M8.2 5.4L10.6 7.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        <path d="M11.5 2V4.4M10.3 3.2H12.7M13.2 6.8V8.6M12.3 7.7H14.1M6.2 2.4V3.8M5.5 3.1H6.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      </>
     )}
   </svg>
 );

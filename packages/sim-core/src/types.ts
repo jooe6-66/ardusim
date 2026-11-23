@@ -135,6 +135,7 @@ export interface SimSnapshot {
   running: boolean;
   timeMs: number;
   onboardLed: boolean;
+  onboardLeds?: Record<string, boolean>;
   ledStates: Record<string, LedVisualState>;
   rgbLedStates: Record<string, RgbLedVisualState>;
   sevenSegStates: Record<string, Record<string, number>>;
