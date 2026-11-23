@@ -39,6 +39,7 @@ export class CompileError extends Error {
 
 export interface CompilerServiceOptions {
   compileTimeoutMs?: number;
+  buildCachePath?: string;
 }
 
 const MAX_SKETCH_BYTES = 64 * 1024;
@@ -94,16 +95,22 @@ function getArduinoCliBinary(): string {
   return 'arduino-cli';
 }
 
+function getBuildCachePath(): string {
+  return process.env.ARDUINO_BUILD_CACHE_PATH?.trim() || join(homedir(), '.arduino15', 'build-cache');
+}
+
 export class CompilerService {
   private cache = new Map<string, { hex: string; logs: string }>();
   private cliAvailable: Promise<boolean> | null = null;
   private arduinoCliBin: string;
   private readonly compileTimeoutMs: number;
+  private readonly buildCachePath: string;
 
   constructor(opts: CompilerServiceOptions = {}) {
     this.arduinoCliBin = getArduinoCliBinary();
     this.compileTimeoutMs =
       opts.compileTimeoutMs ?? parseTimeoutEnv(process.env.COMPILE_TIMEOUT_MS, DEFAULT_COMPILE_TIMEOUT_MS);
+    this.buildCachePath = opts.buildCachePath ?? getBuildCachePath();
   }
 
   async resolveEngine(): Promise<'arduino-cli'> {
@@ -162,7 +169,13 @@ export class CompilerService {
     const workDir = await mkdtemp(join(tmpdir(), 'ardusim-cli-'));
     const sketchDir = join(workDir, 'sketch');
     const buildDir = join(workDir, 'build');
+    const sketchCacheDir = join(
+      this.buildCachePath,
+      'sketches',
+      createHash('md5').update(sketchDir).digest('hex').toUpperCase()
+    );
     try {
+      await mkdir(this.buildCachePath, { recursive: true });
       await mkdir(sketchDir, { recursive: true });
       await mkdir(buildDir, { recursive: true });
       await writeFile(join(sketchDir, 'sketch.ino'), sketch, 'utf8');
@@ -170,7 +183,17 @@ export class CompilerService {
       const { stdout, stderr } = await execFileAsync(
         this.arduinoCliBin,
         ['compile', '--fqbn', fqbn, '--output-dir', buildDir, sketchDir],
-        { timeout: this.compileTimeoutMs, maxBuffer: 2 * 1024 * 1024 }
+        {
+          timeout: this.compileTimeoutMs,
+          maxBuffer: 2 * 1024 * 1024,
+          env: {
+            ...process.env,
+            ARDUINO_BUILD_CACHE_PATH: this.buildCachePath,
+            ARDUINO_BUILD_CACHE_TTL: process.env.ARDUINO_BUILD_CACHE_TTL ?? '87600h',
+            ARDUINO_BUILD_CACHE_COMPILATIONS_BEFORE_PURGE:
+              process.env.ARDUINO_BUILD_CACHE_COMPILATIONS_BEFORE_PURGE ?? '0',
+          },
+        }
       );
       const hex = await readFile(join(buildDir, 'sketch.ino.hex'), 'utf8');
       return { hex, logs: `${stdout}\n${stderr}`.trim() };
@@ -189,7 +212,10 @@ export class CompilerService {
       }
       throw new CompileError('Compilation failed', logs, 400);
     } finally {
-      await rm(workDir, { recursive: true, force: true });
+      await Promise.all([
+        rm(workDir, { recursive: true, force: true }),
+        rm(sketchCacheDir, { recursive: true, force: true }),
+      ]);
     }
   }
 }

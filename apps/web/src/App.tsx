@@ -171,6 +171,10 @@ function sanitizeImportedDiagram(raw: unknown): { parts: PartInstance[]; wires: 
   return { parts, wires };
 }
 
+function isJsonResponse(res: Response): boolean {
+  return (res.headers.get('content-type') || '').toLowerCase().includes('application/json');
+}
+
 async function compileWithWakeRetry(
   board: BoardId,
   sketch: string,
@@ -183,12 +187,9 @@ async function compileWithWakeRetry(
       body: JSON.stringify({ board, sketch }),
     });
 
-  const isJson = (res: Response) =>
-    (res.headers.get('content-type') || '').toLowerCase().includes('application/json');
-
   try {
     const first = await postCompile();
-    if (isJson(first)) return first;
+    if (isJsonResponse(first)) return first;
   } catch {
     if (isLocalCompilerUrl(COMPILER_BASE) || navigator.onLine === false) throw new Error('offline');
   }
@@ -208,9 +209,9 @@ async function compileWithWakeRetry(
     await new Promise((r) => setTimeout(r, 4000));
     try {
       const health = await fetch(`${COMPILER_BASE}/api/health`);
-      if (health.ok && isJson(health)) {
+      if (health.ok && isJsonResponse(health)) {
         const res = await postCompile();
-        if (isJson(res)) return res;
+        if (isJsonResponse(res)) return res;
       }
     } catch {
       // Container still booting; retry until timeout
@@ -280,6 +281,7 @@ export const App: React.FC = () => {
 
   const [running, setRunning] = useState(false);
   const [compiling, setCompiling] = useState(false);
+  const [compilerWaking, setCompilerWaking] = useState(false);
   const [statusText, setStatusText] = useState<string>('');
   const [compileError, setCompileError] = useState<{
     message: string;
@@ -323,6 +325,81 @@ export const App: React.FC = () => {
   useEffect(() => {
     return () => {
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  // Proactively wake sleeping remote compiler container on initial app load
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+    let showTimer: number | null = window.setTimeout(() => {
+      if (!cancelled) setCompilerWaking(true);
+    }, 800);
+    let pollTimer: number | null = null;
+
+    const clearShowTimer = () => {
+      if (showTimer !== null) {
+        window.clearTimeout(showTimer);
+        showTimer = null;
+      }
+    };
+
+    const wakeCompiler = async () => {
+      try {
+        const res = await fetch(`${COMPILER_BASE}/api/health`, { signal: controller.signal });
+        if (cancelled) return;
+        if (res.ok && isJsonResponse(res)) {
+          clearShowTimer();
+          setCompilerWaking(false);
+          return;
+        }
+      } catch {
+        if (cancelled || controller.signal.aborted) return;
+      }
+
+      if (isLocalCompilerUrl(COMPILER_BASE) || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+        clearShowTimer();
+        setCompilerWaking(false);
+        return;
+      }
+
+      clearShowTimer();
+      setCompilerWaking(true);
+      fetch(`${COMPILER_BASE}/api/health`, { mode: 'no-cors' }).catch(() => {});
+
+      const deadline = Date.now() + 95_000;
+      const poll = async () => {
+        if (cancelled || Date.now() >= deadline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+          if (!cancelled) setCompilerWaking(false);
+          return;
+        }
+        try {
+          const res = await fetch(`${COMPILER_BASE}/api/health`, { signal: controller.signal });
+          if (cancelled) return;
+          if (res.ok && isJsonResponse(res)) {
+            setCompilerWaking(false);
+            return;
+          }
+        } catch {
+          if (cancelled || controller.signal.aborted) return;
+        }
+        if (!cancelled) {
+          pollTimer = window.setTimeout(poll, 4000);
+        }
+      };
+
+      pollTimer = window.setTimeout(poll, 4000);
+    };
+
+    void wakeCompiler();
+
+    return () => {
+      cancelled = true;
+      clearShowTimer();
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+      controller.abort();
     };
   }, []);
 
@@ -698,6 +775,7 @@ export const App: React.FC = () => {
         const res = await compileWithWakeRetry(board, sketch, (sec) =>
           setStatusText(t.statusWaking(sec))
         );
+        setCompilerWaking(false);
 
         const data = await res.json();
         if (!res.ok) {
@@ -1293,6 +1371,12 @@ export const App: React.FC = () => {
               ? statusText || t.compiling
               : statusText || (running ? t.statusRunning : t.statusIdle)}
           </span>
+          {compilerWaking && !compiling && (
+            <span className="status-wake-pill" title={t.statusCompilerWaking}>
+              <span className="status-wake-dot" aria-hidden="true" />
+              <span>{t.statusCompilerWaking}</span>
+            </span>
+          )}
         </div>
         <div className="status-right">
           <span className="status-metric">{t.partsCount(diagram.parts.length)}</span>

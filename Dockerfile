@@ -35,10 +35,18 @@ ENV HOME=/home/ardusim
 WORKDIR /home/ardusim/app
 
 RUN arduino-cli config init \
+    && arduino-cli config set build_cache.path /home/ardusim/.arduino15/build-cache \
+    && arduino-cli config set build_cache.ttl 87600h \
+    && arduino-cli config set build_cache.compilations_before_purge 0 \
     && arduino-cli core update-index \
     && arduino-cli core install arduino:avr \
     && arduino-cli lib install "Servo" "Stepper" "LiquidCrystal I2C" "DHT sensor library" "Adafruit SSD1306" "Adafruit GFX Library" "Adafruit NeoPixel" "MFRC522" "RTClib" "LedControl" \
-    && rm -rf /home/ardusim/.arduino15/staging
+    && mkdir -p /home/ardusim/.arduino15/build-cache /tmp/prewarm \
+    && printf 'void setup() {}\nvoid loop() {}\n' > /tmp/prewarm/prewarm.ino \
+    && for fqbn in arduino:avr:uno arduino:avr:nano arduino:avr:mega; do \
+         arduino-cli compile --fqbn "$fqbn" /tmp/prewarm >/dev/null; \
+       done \
+    && rm -rf /tmp/prewarm /home/ardusim/.arduino15/build-cache/sketches /home/ardusim/.arduino15/staging
 
 COPY --chown=10001:10001 --from=builder /app/package.json ./
 COPY --chown=10001:10001 --from=builder /app/node_modules ./node_modules
@@ -56,6 +64,7 @@ ENV MAX_QUEUE_SIZE=24
 ENV RATE_LIMIT_PER_MIN=120
 ENV COMPILE_TIMEOUT_MS=60000
 ENV NODE_OPTIONS=--max-old-space-size=192
+ENV ARDUINO_BUILD_CACHE_PATH=/home/ardusim/.arduino15/build-cache
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

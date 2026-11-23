@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { AvrSimulator, MultiMcuSimulator, PartInstance, PartManifest, Wire, parseIntelHex } from '@ardusim/sim-core';
 import { CompileError, CompilerService, parseTimeoutEnv } from '../src/runner.js';
@@ -454,5 +458,36 @@ test('Root route returns service info, unavailable health returns 503, and timeo
   } finally {
     if (prevTimeout === undefined) delete process.env.COMPILE_TIMEOUT_MS;
     else process.env.COMPILE_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test('CompilerService persists AVR core.a cache and cleans up per-sketch cache directory', async () => {
+  const buildCachePath = await mkdtemp(join(tmpdir(), 'ardusim-cache-test-'));
+  try {
+    const compiler = new CompilerService({ buildCachePath });
+
+    const sketchA = 'void setup() { pinMode(13, OUTPUT); }\nvoid loop() { digitalWrite(13, HIGH); }\n';
+    const resA = await compiler.compile('arduino-uno', sketchA);
+    assert.ok(resA.hex.startsWith(':'));
+
+    const coresDir = join(buildCachePath, 'cores');
+    const coreDirs = await readdir(coresDir);
+    const unoCoreDir = coreDirs.find((d) => /^arduino_avr_uno_/.test(d));
+    assert.ok(unoCoreDir, `Expected arduino_avr_uno_* core cache dir, got: ${coreDirs.join(', ')}`);
+    assert.equal(existsSync(join(coresDir, unoCoreDir, 'core.a')), true);
+
+    const sketchesDir = join(buildCachePath, 'sketches');
+    const sketchesAfterA = existsSync(sketchesDir) ? await readdir(sketchesDir) : [];
+    assert.equal(sketchesAfterA.length, 0, `Expected sketches cache to be clean, found: ${sketchesAfterA.join(', ')}`);
+
+    const sketchB = 'void setup() { pinMode(12, OUTPUT); }\nvoid loop() { digitalWrite(12, LOW); }\n';
+    const resB = await compiler.compile('arduino-uno', sketchB);
+    assert.ok(resB.hex.startsWith(':'));
+    assert.equal(existsSync(join(coresDir, unoCoreDir, 'core.a')), true);
+
+    const sketchesAfterB = existsSync(sketchesDir) ? await readdir(sketchesDir) : [];
+    assert.equal(sketchesAfterB.length, 0, `Expected sketches cache to be clean, found: ${sketchesAfterB.join(', ')}`);
+  } finally {
+    await rm(buildCachePath, { recursive: true, force: true });
   }
 });
