@@ -5,6 +5,9 @@ const UNFLIP_SVG_CSS = `
 .part-unflip-y text, .part-unflip-y .unflip-display { transform-box: fill-box; transform-origin: center; transform: scaleY(-1); }
 .part-unflip-x.part-unflip-y text, .part-unflip-x.part-unflip-y .unflip-display { transform-box: fill-box; transform-origin: center; transform: scale(-1, -1); }
 .part-unflip-x .unflip-display text, .part-unflip-y .unflip-display text { transform: none; }
+.part-unflip-x text.unflip-rot90 { transform: scaleY(-1); }
+.part-unflip-y text.unflip-rot90 { transform: scaleX(-1); }
+.part-unflip-x.part-unflip-y text.unflip-rot90 { transform: scale(-1, -1); }
 `;
 
 function triggerBlobDownload(blob: Blob, filename: string): void {

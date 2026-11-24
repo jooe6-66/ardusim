@@ -10,6 +10,7 @@ export type SetDigitalPinFn = (high: boolean) => void;
 export class HcSr04Device {
   private trigRiseCycle: number | null = null;
   private lastTrigHigh = false;
+  private disposed = false;
   distanceCm = 100;
 
   constructor(
@@ -18,7 +19,12 @@ export class HcSr04Device {
     private readonly setEchoPin: SetDigitalPinFn
   ) {}
 
+  dispose(): void {
+    this.disposed = true;
+  }
+
   onTrigChange(high: boolean): void {
+    if (this.disposed) return;
     if (high === this.lastTrigHigh) return;
     this.lastTrigHigh = high;
     const now = this.cpu.cycles;
@@ -32,14 +38,17 @@ export class HcSr04Device {
       const pulseUs = ((now - this.trigRiseCycle) * 1_000_000) / this.clockHz;
       this.trigRiseCycle = null;
       if (pulseUs >= 5) {
-        const clampedCm = Math.min(400, Math.max(2, this.distanceCm));
+        const dist = Number.isFinite(this.distanceCm) ? this.distanceCm : 100;
+        const clampedCm = Math.min(400, Math.max(2, dist));
         const echoUs = Math.round(clampedCm * 58.2);
         const startDelayCycles = Math.round((200 * this.clockHz) / 1_000_000);
         const echoCycles = Math.round((echoUs * this.clockHz) / 1_000_000);
 
         this.cpu.addClockEvent(() => {
+          if (this.disposed) return;
           this.setEchoPin(true);
           this.cpu.addClockEvent(() => {
+            if (this.disposed) return;
             this.setEchoPin(false);
           }, echoCycles);
         }, startDelayCycles);
@@ -55,6 +64,7 @@ export class HcSr04Device {
 export class DhtDevice {
   private lowStartCycle: number | null = null;
   private responding = false;
+  private disposed = false;
   temperatureC = 26.5;
   humidityPct = 62.0;
   model: 'DHT22' | 'DHT11' = 'DHT22';
@@ -65,9 +75,14 @@ export class DhtDevice {
     private readonly setDataPin: SetDigitalPinFn
   ) {}
 
+  dispose(): void {
+    this.disposed = true;
+    this.responding = false;
+  }
+
   /** Called whenever MCU pin state changes on the DHT DATA line. */
   onLineChange(drivenLowByMcu: boolean): void {
-    if (this.responding) return;
+    if (this.disposed || this.responding) return;
     const now = this.cpu.cycles;
 
     if (drivenLowByMcu) {
@@ -86,15 +101,17 @@ export class DhtDevice {
   }
 
   private buildBytes(): [number, number, number, number, number] {
+    const rawHum = Number.isFinite(this.humidityPct) ? this.humidityPct : 62.0;
+    const rawTemp = Number.isFinite(this.temperatureC) ? this.temperatureC : 26.5;
     if (this.model === 'DHT11') {
-      const hum = Math.min(100, Math.max(0, Math.round(this.humidityPct)));
-      const temp = Math.min(50, Math.max(0, Math.round(this.temperatureC)));
+      const hum = Math.min(100, Math.max(0, Math.round(rawHum)));
+      const temp = Math.min(50, Math.max(0, Math.round(rawTemp)));
       const checksum = (hum + temp) & 0xff;
       return [hum, 0, temp, 0, checksum];
     }
-    const hum10 = Math.min(1000, Math.max(0, Math.round(this.humidityPct * 10)));
-    const neg = this.temperatureC < 0;
-    const temp10 = Math.min(800, Math.round(Math.abs(this.temperatureC) * 10));
+    const hum10 = Math.min(1000, Math.max(0, Math.round(rawHum * 10)));
+    const neg = rawTemp < 0;
+    const temp10 = Math.min(800, Math.round(Math.abs(rawTemp) * 10));
     const b0 = (hum10 >> 8) & 0xff;
     const b1 = hum10 & 0xff;
     const b2 = ((temp10 >> 8) & 0x7f) | (neg ? 0x80 : 0);
@@ -104,6 +121,7 @@ export class DhtDevice {
   }
 
   private emitResponseFrame(): void {
+    if (this.disposed) return;
     this.responding = true;
     const usToCycles = (us: number) => Math.max(1, Math.round((us * this.clockHz) / 1_000_000));
     const bytes = this.buildBytes();
@@ -128,12 +146,20 @@ export class DhtDevice {
 
     let idx = 0;
     const scheduleNext = () => {
+      if (this.disposed) {
+        this.responding = false;
+        return;
+      }
       if (idx >= events.length) {
         this.responding = false;
         return;
       }
       const ev = events[idx++];
       this.cpu.addClockEvent(() => {
+        if (this.disposed) {
+          this.responding = false;
+          return;
+        }
         this.setDataPin(ev.high);
         scheduleNext();
       }, usToCycles(ev.delayUs));
@@ -190,7 +216,7 @@ export class ContinuousServoDevice {
   private lastPulseCycle = -1;
 
   constructor(private readonly cpu: CPU, private readonly clockHz: number, maxRpm = 120) {
-    this.maxRpm = maxRpm;
+    this.maxRpm = Number.isFinite(maxRpm) ? maxRpm : 120;
   }
 
   private advanceTo(nowCycle: number): void {
@@ -232,7 +258,9 @@ export class ContinuousServoDevice {
         } else if (widthUs > 1530) {
           speedNorm = Math.min(1, (widthUs - 1530) / 470);
         }
-        this.rpm = speedNorm * Math.max(1, this.maxRpm);
+        const safeMaxRpm = Number.isFinite(this.maxRpm) ? Math.max(1, this.maxRpm) : 120;
+        this.rpm = speedNorm * safeMaxRpm;
+        if (Math.abs(this.rpm) < 0.5) this.rpm = 0;
         this.pulseUs = Math.round(widthUs);
         this.lastPulseCycle = now;
         this.lastUpdateCycle = now;
@@ -261,7 +289,9 @@ export class BuzzerDevice {
   private windowStartCycle = 0;
   frequencyHz = 0;
 
-  constructor(private readonly cpu: CPU, private readonly clockHz: number) {}
+  constructor(private readonly cpu: CPU, private readonly clockHz: number) {
+    this.windowStartCycle = cpu.cycles;
+  }
 
   onSignalChange(high: boolean): void {
     if (high === this.lastHigh) return;

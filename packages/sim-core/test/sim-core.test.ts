@@ -5,11 +5,16 @@ import {
   autoTidyCircuit,
   autoTidyWires,
   autoWireFromSketch,
+  AvrSimulator,
   buildNetlist,
   ContinuousServoDevice,
   getPinWorldPosition,
+  I2CBusRouter,
+  I2CDevice,
+  Mfrc522Device,
   moveWireCorner,
   moveWireSegment,
+  MultiMcuSimulator,
   parseIntelHex,
   PassiveCircuitSolver,
   pickWireColor,
@@ -21,6 +26,7 @@ import {
   PartManifest,
   Wire,
 } from '../src/index.js';
+import { AVRTWI, twiConfig } from 'avr8js';
 
 const testManifests = new Map<string, PartManifest>([
   [
@@ -1808,4 +1814,329 @@ test('autoWireFromSketch detects all protocol modules and explicit power/breadbo
   assert.equal(boostRes.parts.filter((p) => p.type === 'battery-lipo-3s').length, 1);
   assert.equal(boostRes.parts.filter((p) => p.type === 'boost-mt3608').length, 1);
   assert.equal(boostRes.parts.filter((p) => p.type === 'l298n').length, 1);
+});
+
+test('autoWireFromSketch regression: multi-sensor AO/DO, analogRead(0)->A0, INPUT_PULLUP, SoftwareSerial, MD_MAX72XX', () => {
+  const m = new Map(testManifests);
+  const unoPins: PartManifest['pins'] = [
+    { id: '5V', label: '5V', x: 134, y: 182, type: 'power', exitDir: 'down', fixedVoltage: 5.0 },
+    { id: 'GND.1', label: 'GND', x: 86, y: 14, type: 'gnd', exitDir: 'up', fixedVoltage: 0 },
+    { id: 'GND.2', label: 'GND', x: 146, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+  ];
+  for (let pin = 2; pin <= 13; pin++) {
+    unoPins.push({ id: String(pin), label: `D${pin}`, x: 236 - (pin - 2) * 12, y: 14, type: 'digital', exitDir: 'up' });
+  }
+  for (let a = 0; a <= 5; a++) {
+    unoPins.push({ id: `A${a}`, label: `A${a}`, x: 200 + a * 12, y: 182, type: 'analog', exitDir: 'down' });
+  }
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Arduino Uno', en: 'Arduino Uno' },
+    defaultProps: {},
+    pins: unoPins,
+  });
+  m.set('ir-obstacle', {
+    type: 'ir-obstacle',
+    category: 'sensor',
+    width: 72,
+    height: 84,
+    name: { id: 'IR', en: 'IR' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 80, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 80, type: 'gnd' },
+      { id: 'OUT', label: 'OUT', x: 42, y: 80, type: 'digital' },
+      { id: 'AO', label: 'AO', x: 54, y: 80, type: 'analog' },
+    ],
+  });
+  m.set('max7219', {
+    type: 'max7219',
+    category: 'display',
+    width: 112,
+    height: 112,
+    name: { id: 'MAX7219', en: 'MAX7219' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 8, y: 20, type: 'power' },
+      { id: 'GND', label: 'GND', x: 8, y: 32, type: 'gnd' },
+      { id: 'DIN', label: 'DIN', x: 8, y: 44, type: 'digital' },
+      { id: 'CS', label: 'CS', x: 8, y: 56, type: 'digital' },
+      { id: 'CLK', label: 'CLK', x: 8, y: 68, type: 'digital' },
+    ],
+  });
+  m.set('gps-neo6m', {
+    type: 'gps-neo6m',
+    category: 'sensor',
+    width: 80,
+    height: 60,
+    name: { id: 'GPS', en: 'GPS' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 20, y: 56, type: 'power' },
+      { id: 'GND', label: 'GND', x: 32, y: 56, type: 'gnd' },
+      { id: 'TX', label: 'TX', x: 44, y: 56, type: 'uart' },
+      { id: 'RX', label: 'RX', x: 56, y: 56, type: 'uart' },
+    ],
+  });
+  m.set('hc-05', {
+    type: 'hc-05',
+    category: 'sensor',
+    width: 80,
+    height: 60,
+    name: { id: 'BT', en: 'BT' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 20, y: 56, type: 'power' },
+      { id: 'GND', label: 'GND', x: 32, y: 56, type: 'gnd' },
+      { id: 'TXD', label: 'TXD', x: 44, y: 56, type: 'uart' },
+      { id: 'RXD', label: 'RXD', x: 56, y: 56, type: 'uart' },
+    ],
+  });
+  m.set('potentiometer', {
+    type: 'potentiometer',
+    category: 'input',
+    width: 48,
+    height: 48,
+    name: { id: 'Pot', en: 'Pot' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 10, y: 40, type: 'power' },
+      { id: 'SIG', label: 'SIG', x: 24, y: 40, type: 'analog' },
+      { id: 'GND', label: 'GND', x: 38, y: 40, type: 'gnd' },
+    ],
+  });
+  m.set('pushbutton', {
+    type: 'pushbutton',
+    category: 'input',
+    width: 36,
+    height: 36,
+    name: { id: 'Btn', en: 'Btn' },
+    defaultProps: {},
+    pins: [
+      { id: '1a', label: '1a', x: 8, y: 8, type: 'passive' },
+      { id: '2a', label: '2a', x: 28, y: 8, type: 'passive' },
+    ],
+  });
+  const uno: PartInstance = { id: 'mcu1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+
+  // Two IR sensors (2x AO + 1x DO -> 2 parts, not 1 double-wired part)
+  const multiIr = `
+    const int ir_left = A0;
+    const int ir_right = A1;
+    const int ir_dig = 2;
+    void setup() { pinMode(ir_dig, INPUT); }
+    void loop() { int a = analogRead(ir_left); int b = analogRead(ir_right); int c = digitalRead(ir_dig); }
+  `;
+  const multiIrRes = autoWireFromSketch(multiIr, uno, [uno], [], m);
+  assert.equal(multiIrRes.parts.filter((p) => p.type === 'ir-obstacle').length, 2);
+
+  // analogRead(0) maps to A0, not D0
+  const analogZero = `
+    void loop() { int v = analogRead(0); }
+  `;
+  const azRes = autoWireFromSketch(analogZero, uno, [uno], [], m);
+  assert.ok(
+    azRes.wires.some((w) => (w.from.partId === 'mcu1' && w.from.pinId === 'A0') || (w.to.partId === 'mcu1' && w.to.pinId === 'A0')),
+    'Expected analogRead(0) to wire A0'
+  );
+
+  // INPUT_PULLUP pin does not inherit global sensor type
+  const pullupSketch = `
+    const int irSensor = 2;
+    const int modePin = 3;
+    void setup() {
+      pinMode(irSensor, INPUT);
+      pinMode(modePin, INPUT_PULLUP);
+    }
+    void loop() {
+      digitalRead(irSensor);
+      digitalRead(modePin);
+    }
+  `;
+  const puRes = autoWireFromSketch(pullupSketch, uno, [uno], [], m);
+  assert.equal(puRes.parts.filter((p) => p.type === 'ir-obstacle').length, 1);
+  assert.equal(puRes.parts.filter((p) => p.type === 'pushbutton').length, 1);
+
+  // SoftwareSerial varName disambiguation (GPS + BT together)
+  const dualUart = `
+    #include <SoftwareSerial.h>
+    SoftwareSerial gpsSerial(2, 3);
+    SoftwareSerial btSerial(4, 5);
+    void setup() { gpsSerial.begin(9600); btSerial.begin(9600); }
+  `;
+  const duRes = autoWireFromSketch(dualUart, uno, [uno], [], m);
+  assert.equal(duRes.parts.filter((p) => p.type === 'gps-neo6m').length, 1);
+  assert.equal(duRes.parts.filter((p) => p.type === 'hc-05').length, 1);
+
+  // MD_MAX72XX 5-arg software SPI
+  const swMax = `
+    #include <MD_MAX72XX.h>
+    MD_MAX72XX mx = MD_MAX72XX(MD_MAX72XX::FC16_HW, 6, 7, 8, 1);
+    void setup() { mx.begin(); }
+  `;
+  const mxRes = autoWireFromSketch(swMax, uno, [uno], [], m);
+  const mxPart = mxRes.parts.find((p) => p.type === 'max7219');
+  assert.ok(mxPart);
+  assert.ok(mxRes.wires.some((w) => (w.from.pinId === '6' && w.to.pinId === 'DIN') || (w.to.pinId === '6' && w.from.pinId === 'DIN')));
+  assert.ok(mxRes.wires.some((w) => (w.from.pinId === '7' && w.to.pinId === 'CLK') || (w.to.pinId === '7' && w.from.pinId === 'CLK')));
+  assert.ok(mxRes.wires.some((w) => (w.from.pinId === '8' && w.to.pinId === 'CS') || (w.to.pinId === '8' && w.from.pinId === 'CS')));
+});
+
+test('I2CBusRouter.syncDevices preserves activeDevice when retained and clears when removed', () => {
+  const cpu = new CPU(new Uint16Array(1024));
+  const twi = new AVRTWI(cpu, twiConfig, 16_000_000);
+  const bus = new I2CBusRouter(twi);
+  const writes: number[] = [];
+  const dev: I2CDevice = {
+    address: 0x27,
+    connect: () => true,
+    writeByte: (v) => {
+      writes.push(v);
+      return true;
+    },
+    readByte: () => 0,
+    stop: () => {},
+  };
+  bus.syncDevices([dev]);
+  bus.connectToSlave(0x27, true);
+  bus.syncDevices([dev]);
+  bus.writeByte(0x42);
+  assert.deepEqual(writes, [0x42]);
+
+  bus.syncDevices([]);
+  bus.writeByte(0x99);
+  assert.deepEqual(writes, [0x42]);
+});
+
+test('Passive VIN pin does not clamp external battery voltage to 5.0V', () => {
+  const m = new Map(testManifests);
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Uno', en: 'Uno' },
+    defaultProps: {},
+    pins: [
+      { id: 'GND.2', label: 'GND', x: 120, y: 180, type: 'gnd', fixedVoltage: 0 },
+      { id: 'VIN', label: 'VIN', x: 132, y: 180, type: 'power' },
+    ],
+  });
+  m.set('battery-lipo-3s', {
+    type: 'battery-lipo-3s',
+    category: 'power',
+    width: 60,
+    height: 40,
+    name: { id: 'LiPo 3S', en: 'LiPo 3S' },
+    defaultProps: { voltage: 11.1 },
+    pins: [
+      { id: '+', label: '+', x: 10, y: 20, type: 'power' },
+      { id: '-', label: '-', x: 50, y: 20, type: 'gnd' },
+    ],
+  });
+  const parts: PartInstance[] = [
+    { id: 'mcu1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'bat1', type: 'battery-lipo-3s', x: 300, y: 0, rotation: 0, props: { voltage: 11.1 } },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'bat1', pinId: '+' }, to: { partId: 'mcu1', pinId: 'VIN' }, color: '#DC2626' },
+    { id: 'w2', from: { partId: 'bat1', pinId: '-' }, to: { partId: 'mcu1', pinId: 'GND.2' }, color: '#111827' },
+  ];
+  const netlist = buildNetlist(parts, wires, m);
+  const solver = new PassiveCircuitSolver();
+  const out = solver.solve(parts, m, netlist, [], 0.01);
+  const vinNet = netlist.pinToNet.get('mcu1:VIN')!;
+  const vinV = out.netVoltages.get(vinNet)!;
+  assert.ok(vinV > 10.5 && vinV < 11.5, `Expected VIN ~11.1V, got ${vinV}`);
+});
+
+test('Mfrc522Device.setUidHex preserves 0x00 bytes and NaN props are safely guarded', () => {
+  const rfid = new Mfrc522Device();
+  rfid.setUidHex('00 11 00 22');
+  assert.deepEqual(rfid.uid, [0x00, 0x11, 0x00, 0x22]);
+  rfid.setUidHex('00 00 00 00');
+  assert.deepEqual(rfid.uid, [0x00, 0x00, 0x00, 0x00]);
+
+  const cpu = new CPU(new Uint16Array(1024));
+  const servo360 = new ContinuousServoDevice(cpu, 16_000_000, Number.NaN);
+  assert.equal(servo360.maxRpm, 120);
+  assert.equal(servo360.getState().direction, 'stop');
+  assert.equal(servo360.getState().rpm, 0);
+
+  const m = new Map(testManifests);
+  m.set('potentiometer', {
+    type: 'potentiometer',
+    category: 'input',
+    width: 48,
+    height: 48,
+    name: { id: 'Pot', en: 'Pot' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 10, y: 40, type: 'power' },
+      { id: 'SIG', label: 'SIG', x: 24, y: 40, type: 'analog' },
+      { id: 'GND', label: 'GND', x: 38, y: 40, type: 'gnd' },
+    ],
+  });
+  const parts: PartInstance[] = [
+    { id: 'mcu1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'pot1', type: 'potentiometer', x: 100, y: 0, rotation: 0, props: { value: Number.NaN, position: Number.NaN } },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'pot1', pinId: 'VCC' }, to: { partId: 'mcu1', pinId: '5V' }, color: '#DC2626' },
+    { id: 'w2', from: { partId: 'pot1', pinId: 'GND' }, to: { partId: 'mcu1', pinId: 'GND.2' }, color: '#111827' },
+  ];
+  const netlist = buildNetlist(parts, wires, m);
+  const solver = new PassiveCircuitSolver();
+  const out = solver.solve(parts, m, netlist, [], 0.01);
+  const sigNet = netlist.pinToNet.get('pot1:SIG')!;
+  assert.ok(Number.isFinite(out.netVoltages.get(sigNet)!));
+});
+
+test('AvrSimulator.reset and MultiMcuSimulator relay netlist sync work cleanly', () => {
+  const minimalHex = ':0200000000C03E\n:00000001FF';
+  const sim = new AvrSimulator(minimalHex, { board: 'arduino-uno' });
+  sim.setCircuit([{ id: 'mcu1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} }], [], testManifests);
+  assert.doesNotThrow(() => sim.reset());
+
+  const m = new Map(testManifests);
+  m.set('relay', {
+    type: 'relay',
+    category: 'output',
+    width: 60,
+    height: 60,
+    name: { id: 'Relay', en: 'Relay' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 10, y: 10, type: 'power' },
+      { id: 'GND', label: 'GND', x: 20, y: 10, type: 'gnd' },
+      { id: 'IN', label: 'IN', x: 30, y: 10, type: 'digital' },
+      { id: 'COM', label: 'COM', x: 10, y: 50, type: 'passive' },
+      { id: 'NO', label: 'NO', x: 30, y: 50, type: 'passive' },
+    ],
+  });
+  const multi = new MultiMcuSimulator([
+    { partId: 'mcu1', board: 'arduino-uno', hex: minimalHex },
+    { partId: 'mcu2', board: 'arduino-uno', hex: minimalHex },
+  ]);
+  multi.setCircuit(
+    [
+      { id: 'mcu1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+      { id: 'mcu2', type: 'arduino-uno', x: 300, y: 0, rotation: 0, props: {} },
+      { id: 'rel1', type: 'relay', x: 150, y: 200, rotation: 0, props: {} },
+    ],
+    [
+      { id: 'w1', from: { partId: 'rel1', pinId: 'VCC' }, to: { partId: 'mcu1', pinId: '5V' }, color: '#DC2626' },
+      { id: 'w2', from: { partId: 'rel1', pinId: 'GND' }, to: { partId: 'mcu1', pinId: 'GND.2' }, color: '#111827' },
+      { id: 'w3', from: { partId: 'rel1', pinId: 'IN' }, to: { partId: 'mcu1', pinId: '5V' }, color: '#F59E0B' },
+      { id: 'w4', from: { partId: 'rel1', pinId: 'COM' }, to: { partId: 'mcu1', pinId: '5V' }, color: '#DC2626' },
+      { id: 'w5', from: { partId: 'rel1', pinId: 'NO' }, to: { partId: 'mcu2', pinId: '13' }, color: '#0F6660' },
+    ],
+    m
+  );
+  const snap = multi.stepCycles(1000);
+  assert.equal(snap.relayEnergized['rel1'], true);
+  assert.ok((snap.pinVoltages['mcu2:13'] ?? 0) > 4.0);
 });

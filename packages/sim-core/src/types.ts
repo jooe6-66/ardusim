@@ -95,6 +95,7 @@ export interface OledDisplayState {
   buffer: number[];
   displayOn: boolean;
   inverted: boolean;
+  revision?: number;
 }
 
 export interface MotorVisualState {

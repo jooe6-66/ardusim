@@ -13,6 +13,7 @@ import { PART_MANIFEST_MAP } from '@ardusim/parts';
 export type WorkerInMessage =
   | {
       type: 'start';
+      sessionId: number;
       mcus: MultiMcuBoardSpec[];
       parts: PartInstance[];
       wires: Wire[];
@@ -32,14 +33,15 @@ export type WorkerInMessage =
   | { type: 'stop' };
 
 export type WorkerOutMessage =
-  | { type: 'snapshot'; snapshot: SimSnapshot }
-  | { type: 'serial'; mcuPartId: string; text: string }
-  | { type: 'error'; message: string };
+  | { type: 'snapshot'; sessionId: number; snapshot: SimSnapshot }
+  | { type: 'serial'; sessionId: number; mcuPartId: string; text: string }
+  | { type: 'error'; sessionId: number; message: string };
 
 let singleSim: AvrSimulator | null = null;
 let multiSim: MultiMcuSimulator | null = null;
 let timerId: ReturnType<typeof setInterval> | null = null;
 let lastWallTime = 0;
+let activeSessionId = 0;
 const serialChunks = new Map<string, string>();
 
 function stopLoop(): void {
@@ -62,6 +64,7 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
   const msg = event.data;
 
   if (msg.type === 'stop') {
+    activeSessionId = 0;
     stopLoop();
     return;
   }
@@ -98,7 +101,9 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 
   if (msg.type === 'start') {
     stopLoop();
+    activeSessionId = msg.sessionId;
     if (msg.mcus.length === 0) return;
+    const mySessionId = msg.sessionId;
     try {
       const appendByte = (mcuPartId: string, byte: number) => {
         serialChunks.set(mcuPartId, (serialChunks.get(mcuPartId) ?? '') + String.fromCharCode(byte));
@@ -136,26 +141,38 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
       lastWallTime = performance.now();
 
       timerId = setInterval(() => {
+        if (activeSessionId !== mySessionId) return;
         const active = multiSim ?? singleSim;
         if (!active) return;
-        const now = performance.now();
-        const dtMs = Math.min(45, Math.max(8, now - lastWallTime));
-        lastWallTime = now;
+        try {
+          const now = performance.now();
+          const dtMs = Math.min(45, Math.max(8, now - lastWallTime));
+          lastWallTime = now;
 
-        const cycles = Math.round((dtMs / 1000) * UNO_CLOCK_HZ);
-        const snapshot = active.stepCycles(cycles);
+          const cycles = Math.round((dtMs / 1000) * UNO_CLOCK_HZ);
+          const snapshot = active.stepCycles(cycles);
 
-        for (const [mcuPartId, text] of serialChunks.entries()) {
-          if (text.length > 0) {
-            self.postMessage({ type: 'serial', mcuPartId, text } satisfies WorkerOutMessage);
+          for (const [mcuPartId, text] of serialChunks.entries()) {
+            if (text.length > 0) {
+              self.postMessage({
+                type: 'serial',
+                sessionId: mySessionId,
+                mcuPartId,
+                text,
+              } satisfies WorkerOutMessage);
+            }
           }
+          serialChunks.clear();
+          self.postMessage({ type: 'snapshot', sessionId: mySessionId, snapshot } satisfies WorkerOutMessage);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Simulation step failed';
+          self.postMessage({ type: 'error', sessionId: mySessionId, message } satisfies WorkerOutMessage);
+          stopLoop();
         }
-        serialChunks.clear();
-        self.postMessage({ type: 'snapshot', snapshot } satisfies WorkerOutMessage);
       }, 33);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start AVR simulation';
-      self.postMessage({ type: 'error', message } satisfies WorkerOutMessage);
+      self.postMessage({ type: 'error', sessionId: mySessionId, message } satisfies WorkerOutMessage);
       stopLoop();
     }
   }

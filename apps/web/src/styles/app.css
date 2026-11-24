@@ -617,6 +617,18 @@ select:focus-visible,
   transform: none;
 }
 
+.part-unflip-x text.unflip-rot90 {
+  transform: scaleY(-1);
+}
+
+.part-unflip-y text.unflip-rot90 {
+  transform: scaleX(-1);
+}
+
+.part-unflip-x.part-unflip-y text.unflip-rot90 {
+  transform: scale(-1, -1);
+}
+
 .canvas-empty-overlay {
   position: absolute;
   inset: 0;

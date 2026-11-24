@@ -233,11 +233,15 @@ export class Mfrc522Device {
 
   setUidHex(hexStr: string): void {
     const clean = hexStr.replace(/[^0-9a-fA-F]/g, '').padEnd(8, '0').slice(0, 8);
+    const parseByte = (hex: string, fallback: number): number => {
+      const n = parseInt(hex, 16);
+      return Number.isNaN(n) ? fallback : n & 0xff;
+    };
     this.uid = [
-      parseInt(clean.slice(0, 2), 16) || 0xde,
-      parseInt(clean.slice(2, 4), 16) || 0xad,
-      parseInt(clean.slice(4, 6), 16) || 0xbe,
-      parseInt(clean.slice(6, 8), 16) || 0xef,
+      parseByte(clean.slice(0, 2), 0xde),
+      parseByte(clean.slice(2, 4), 0xad),
+      parseByte(clean.slice(4, 6), 0xbe),
+      parseByte(clean.slice(6, 8), 0xef),
     ];
   }
 
@@ -378,6 +382,7 @@ export class SoftUartDevice {
   private rxSampling = false;
   private lastRxHigh = true;
   private rxLog = '';
+  private disposed = false;
 
   constructor(
     private readonly cpu: CPU,
@@ -390,7 +395,15 @@ export class SoftUartDevice {
     this.setTxPin?.(true); // UART idle line is HIGH
   }
 
+  dispose(): void {
+    this.disposed = true;
+    this.txQueue.length = 0;
+    this.txBusy = false;
+    this.rxSampling = false;
+  }
+
   enqueueText(text: string): void {
+    if (this.disposed) return;
     for (let i = 0; i < text.length; i++) {
       if (this.txQueue.length < 512) {
         this.txQueue.push(text.charCodeAt(i) & 0xff);
@@ -400,7 +413,7 @@ export class SoftUartDevice {
   }
 
   private pumpTx(): void {
-    if (!this.setTxPin || this.txQueue.length === 0) {
+    if (this.disposed || !this.setTxPin || this.txQueue.length === 0) {
       this.txBusy = false;
       return;
     }
@@ -414,6 +427,10 @@ export class SoftUartDevice {
 
     let idx = 0;
     const emitBit = () => {
+      if (this.disposed) {
+        this.txBusy = false;
+        return;
+      }
       if (idx >= bits.length) {
         this.pumpTx();
         return;
@@ -426,6 +443,7 @@ export class SoftUartDevice {
 
   /** Called when Arduino drives the device's RX pin (Arduino TX). */
   onRxPinChange(high: boolean): void {
+    if (this.disposed) return;
     if (high === this.lastRxHigh) return;
     const fell = this.lastRxHigh && !high;
     this.lastRxHigh = high;
@@ -436,7 +454,7 @@ export class SoftUartDevice {
       let byteVal = 0;
 
       const sampleNext = () => {
-        if (!this.readRxPin) {
+        if (this.disposed || !this.readRxPin) {
           this.rxSampling = false;
           return;
         }

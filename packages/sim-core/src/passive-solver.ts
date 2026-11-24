@@ -165,6 +165,11 @@ function solveLinearSystem(A: Float64Array[], b: Float64Array): Float64Array {
 
 const SEVEN_SEG_PINS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'];
 
+function finiteNum(val: unknown, fallback: number): number {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export class PassiveCircuitSolver {
   private capState = new Map<string, number>();
 
@@ -284,7 +289,7 @@ export class PassiveCircuitSolver {
         const b = touchNet(netlist.pinToNet.get(`${part.id}:2`));
         if (a >= 0 && b >= 0 && a !== b) {
           const ohms = resistanceToOhms(
-            Number(part.props.value ?? 220),
+            finiteNum(part.props.value, 220),
             (part.props.unit as ResistanceUnit) ?? 'ohm'
           );
           resistors.push({ a, b, ohms });
@@ -293,17 +298,17 @@ export class PassiveCircuitSolver {
         const a = touchNet(netlist.pinToNet.get(`${part.id}:1`));
         const b = touchNet(netlist.pinToNet.get(`${part.id}:2`));
         if (a >= 0 && b >= 0 && a !== b) {
-          resistors.push({ a, b, ohms: ldrLuxToOhms(Number(part.props.lux ?? 300)) });
+          resistors.push({ a, b, ohms: ldrLuxToOhms(finiteNum(part.props.lux, 300)) });
         }
       } else if (part.type === 'potentiometer') {
         const vcc = touchNet(netlist.pinToNet.get(`${part.id}:VCC`));
         const sig = touchNet(netlist.pinToNet.get(`${part.id}:SIG`));
         const gnd = touchNet(netlist.pinToNet.get(`${part.id}:GND`));
         const totalOhms = resistanceToOhms(
-          Number(part.props.value ?? 10),
+          finiteNum(part.props.value, 10),
           (part.props.unit as ResistanceUnit) ?? 'kohm'
         );
-        const pos = Math.min(1, Math.max(0, Number(part.props.position ?? 0.5)));
+        const pos = Math.min(1, Math.max(0, finiteNum(part.props.position, 0.5)));
         const rToGnd = Math.max(1, totalOhms * pos);
         const rToVcc = Math.max(1, totalOhms * (1 - pos));
         if (vcc >= 0 && sig >= 0 && vcc !== sig) resistors.push({ a: vcc, b: sig, ohms: rToVcc });
@@ -311,14 +316,14 @@ export class PassiveCircuitSolver {
       } else if (part.type === 'lm35') {
         const out = touchNet(netlist.pinToNet.get(`${part.id}:OUT`));
         if (out >= 0) {
-          const tempC = Math.min(150, Math.max(0, Number(part.props.tempC ?? 25)));
+          const tempC = Math.min(150, Math.max(0, finiteNum(part.props.tempC, 25)));
           voltageSources.push({ node: out, volts: tempC * 0.01, g: 1 / 100 });
         }
       } else if (part.type === 'mq2') {
         const aout = touchNet(netlist.pinToNet.get(`${part.id}:AOUT`));
         const dout = touchNet(netlist.pinToNet.get(`${part.id}:DOUT`));
-        const gasPct = Math.min(100, Math.max(0, Number(part.props.gasPct ?? 15)));
-        const thresholdPct = Math.min(100, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+        const gasPct = Math.min(100, Math.max(0, finiteNum(part.props.gasPct, 15)));
+        const thresholdPct = Math.min(100, Math.max(5, finiteNum(part.props.thresholdPct, 50)));
         if (aout >= 0) {
           voltageSources.push({ node: aout, volts: 0.4 + (gasPct / 100) * 4.2, g: 1 / 200 });
         }
@@ -339,8 +344,8 @@ export class PassiveCircuitSolver {
       } else if (part.type === 'ir-obstacle') {
         const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
         const out = touchNet(netlist.pinToNet.get(`${part.id}:OUT`));
-        const distanceCm = Math.min(30, Math.max(2, Number(part.props.distanceCm ?? 20)));
-        const thresholdCm = Math.min(30, Math.max(2, Number(part.props.thresholdCm ?? 10)));
+        const distanceCm = Math.min(30, Math.max(2, finiteNum(part.props.distanceCm, 20)));
+        const thresholdCm = Math.min(30, Math.max(2, finiteNum(part.props.thresholdCm, 10)));
         if (ao >= 0) {
           voltageSources.push({
             node: ao,
@@ -358,8 +363,8 @@ export class PassiveCircuitSolver {
       } else if (part.type === 'soil-moisture') {
         const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
         const dOut = touchNet(netlist.pinToNet.get(`${part.id}:DO`));
-        const moisturePct = Math.min(100, Math.max(0, Number(part.props.moisturePct ?? 35)));
-        const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+        const moisturePct = Math.min(100, Math.max(0, finiteNum(part.props.moisturePct, 35)));
+        const thresholdPct = Math.min(95, Math.max(5, finiteNum(part.props.thresholdPct, 50)));
         if (ao >= 0) {
           voltageSources.push({
             node: ao,
@@ -376,7 +381,7 @@ export class PassiveCircuitSolver {
         }
       } else if (part.type === 'water-level') {
         const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
-        const levelPct = Math.min(100, Math.max(0, Number(part.props.levelPct ?? 25)));
+        const levelPct = Math.min(100, Math.max(0, finiteNum(part.props.levelPct, 25)));
         if (ao >= 0) {
           voltageSources.push({
             node: ao,
@@ -387,8 +392,8 @@ export class PassiveCircuitSolver {
       } else if (part.type === 'rain-sensor') {
         const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
         const dOut = touchNet(netlist.pinToNet.get(`${part.id}:DO`));
-        const rainPct = Math.min(100, Math.max(0, Number(part.props.rainPct ?? 0)));
-        const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 40)));
+        const rainPct = Math.min(100, Math.max(0, finiteNum(part.props.rainPct, 0)));
+        const thresholdPct = Math.min(95, Math.max(5, finiteNum(part.props.thresholdPct, 40)));
         if (ao >= 0) {
           voltageSources.push({
             node: ao,
@@ -455,9 +460,10 @@ export class PassiveCircuitSolver {
         const c = touchNet(netlist.pinToNet.get(`${part.id}:C`));
         if (a >= 0 && c >= 0) {
           const model = (part.props.model as DiodeModel) ?? '1N4007';
-          const vf = getDiodeForwardVoltage(model, Number(part.props.vf));
+          const rawVf = Number(part.props.vf);
+          const vf = getDiodeForwardVoltage(model, Number.isFinite(rawVf) ? rawVf : undefined);
           const zenerVz =
-            model === 'zener' ? Math.max(0.5, Number(part.props.zenerVz ?? 3.3)) : undefined;
+            model === 'zener' ? Math.max(0.5, finiteNum(part.props.zenerVz, 3.3)) : undefined;
           diodes.push({ partId: part.id, kind: 'diode', a, b: c, vf, rOn: 5, zenerVz });
         }
       } else if (part.type === 'capacitor') {
@@ -465,7 +471,7 @@ export class PassiveCircuitSolver {
         const b = touchNet(netlist.pinToNet.get(`${part.id}:2`));
         if (a >= 0 && b >= 0) {
           const farads = capacitanceToFarads(
-            Number(part.props.value ?? 100),
+            finiteNum(part.props.value, 100),
             (part.props.unit as CapacitanceUnit) ?? 'uf'
           );
           capacitors.push({
@@ -503,7 +509,7 @@ export class PassiveCircuitSolver {
         if (pos >= 0 && neg >= 0 && pos !== neg) {
           let volts: number;
           if (part.type === 'battery-18650') {
-            const cells = Math.min(3, Math.max(1, Math.round(Number(part.props.cells ?? 1))));
+            const cells = Math.min(3, Math.max(1, Math.round(finiteNum(part.props.cells, 1))));
             const propV = Number(part.props.voltage);
             volts = Number.isFinite(propV) && propV > 0 ? propV : Math.round(cells * 3.7 * 10) / 10;
           } else {

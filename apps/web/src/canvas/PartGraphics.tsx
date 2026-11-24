@@ -67,7 +67,14 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   isActiveMcu,
 }) => {
   const strokeSel = selected ? 'var(--primary)' : 'transparent';
-  const boardLedOn = Boolean(snapshot?.onboardLeds?.[part.id] ?? snapshot?.onboardLed);
+  const boardLedOn = snapshot?.onboardLeds
+    ? Boolean(snapshot.onboardLeds[part.id])
+    : Boolean(snapshot?.onboardLed);
+  const pwrLedFill = snapshot?.running ? '#22C55E' : '#14532D';
+  const safeNum = (val: unknown, fb: number) => {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : fb;
+  };
 
   const renderMcuBadge = (x: number, y: number) =>
     boardBadge ? (
@@ -96,12 +103,12 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
       </g>
     ) : null;
 
+  const oledState = part.type === 'oled-ssd1306' ? snapshot?.oledDisplays?.[part.id] : undefined;
+  const oledRunning = Boolean(snapshot?.running);
   const oledPath = useMemo(() => {
-    if (part.type !== 'oled-ssd1306') return '';
-    const oled = snapshot?.oledDisplays?.[part.id];
-    if (!oled || !oled.displayOn || !snapshot?.running) return '';
-    return buildOledPixelPath(oled.buffer);
-  }, [part.type, part.id, snapshot]);
+    if (!oledState || !oledState.displayOn || !oledRunning) return '';
+    return buildOledPixelPath(oledState.buffer);
+  }, [oledState?.revision, oledState?.buffer, oledState?.displayOn, oledRunning]);
 
   // --- MCU BOARDS ---
   if (part.type === 'arduino-uno') {
@@ -159,6 +166,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
               <rect x={pin.x - 3.5} y={pin.y - 3.5} width={7} height={7} rx={1} fill="#374151" stroke="#0B0F10" strokeWidth={0.8} />
               <g transform={`translate(${pin.x}, ${isTop ? pin.y + 10 : pin.y - 10}) rotate(-90)`}>
                 <text
+                  className="unflip-rot90"
                   x={0}
                   y={0}
                   textAnchor={isTop ? 'end' : 'start'}
@@ -223,6 +231,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
               <circle cx={pin.x} cy={pin.y} r={1.5} fill="#1E293B" />
               <g transform={`translate(${pin.x}, ${isTop ? pin.y + 7.5 : pin.y - 7.5}) rotate(-90)`}>
                 <text
+                  className="unflip-rot90"
                   x={0}
                   y={0}
                   textAnchor={isTop ? 'end' : 'start'}
@@ -305,6 +314,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
               {!isRight ? (
                 <g transform={`translate(${pin.x}, ${isTop ? pin.y + 10.5 : pin.y - 10.5}) rotate(-90)`}>
                   <text
+                    className="unflip-rot90"
                     x={0}
                     y={0}
                     textAnchor={isTop ? 'end' : 'start'}
@@ -571,8 +581,8 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   }
 
   if (part.type === 'ir-obstacle') {
-    const distanceCm = Math.min(30, Math.max(2, Number(part.props.distanceCm ?? 20)));
-    const thresholdCm = Math.min(30, Math.max(2, Number(part.props.thresholdCm ?? 10)));
+    const distanceCm = Math.min(30, Math.max(2, safeNum(part.props.distanceCm, 20)));
+    const thresholdCm = Math.min(30, Math.max(2, safeNum(part.props.thresholdCm, 10)));
     const detected = distanceCm <= thresholdCm;
     return (
       <g>
@@ -584,7 +594,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         <rect x={26} y={32} width={20} height={18} rx={2} fill="#0284C7" stroke="#0369A1" strokeWidth={1} />
         <circle cx={36} cy={41} r={5} fill="#E0F2FE" />
         {/* PWR + Obstacle LEDs */}
-        <circle cx={14} cy={60} r={3} fill="#22C55E" />
+        <circle cx={14} cy={60} r={3} fill={pwrLedFill} />
         <circle cx={58} cy={60} r={3.5} fill={detected ? '#EF4444' : '#334155'} />
         <text x={36} y={-2} textAnchor="middle" fill={detected ? 'var(--danger)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
           IR {distanceCm}cm
@@ -597,8 +607,8 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   }
 
   if (part.type === 'soil-moisture') {
-    const moisturePct = Math.min(100, Math.max(0, Number(part.props.moisturePct ?? 35)));
-    const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+    const moisturePct = Math.min(100, Math.max(0, safeNum(part.props.moisturePct, 35)));
+    const thresholdPct = Math.min(95, Math.max(5, safeNum(part.props.thresholdPct, 50)));
     const wet = moisturePct >= thresholdPct;
     const wetH = Math.round((moisturePct / 100) * 38);
     return (
@@ -614,7 +624,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
             <rect x={43} y={48 - wetH} width={11} height={wetH} rx={2} fill="#0EA5E9" opacity={0.45} />
           </>
         )}
-        <circle cx={16} cy={70} r={2.8} fill="#22C55E" />
+        <circle cx={16} cy={70} r={2.8} fill={pwrLedFill} />
         <circle cx={56} cy={70} r={3.2} fill={wet ? '#10B981' : '#334155'} />
         <text x={36} y={-2} textAnchor="middle" fill={wet ? 'var(--primary)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
           SOIL {moisturePct}%
@@ -627,7 +637,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   }
 
   if (part.type === 'water-level') {
-    const levelPct = Math.min(100, Math.max(0, Number(part.props.levelPct ?? 25)));
+    const levelPct = Math.min(100, Math.max(0, safeNum(part.props.levelPct, 25)));
     const fillH = Math.round((levelPct / 100) * 56);
     return (
       <g>
@@ -640,7 +650,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         {fillH > 0 && (
           <rect x={8} y={70 - fillH} width={44} height={fillH} rx={2} fill="#06B6D4" opacity={0.5} />
         )}
-        <circle cx={13} cy={74} r={2.5} fill="#22C55E" />
+        <circle cx={13} cy={74} r={2.5} fill={pwrLedFill} />
         <text x={30} y={-2} textAnchor="middle" fill="var(--primary)" fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
           H2O {levelPct}%
         </text>
@@ -652,8 +662,8 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
   }
 
   if (part.type === 'rain-sensor') {
-    const rainPct = Math.min(100, Math.max(0, Number(part.props.rainPct ?? 0)));
-    const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 40)));
+    const rainPct = Math.min(100, Math.max(0, safeNum(part.props.rainPct, 0)));
+    const thresholdPct = Math.min(95, Math.max(5, safeNum(part.props.thresholdPct, 40)));
     const raining = rainPct >= thresholdPct;
     const dropCount = Math.round((rainPct / 100) * 6);
     const dropCoords: Array<[number, number]> = [[20, 18], [42, 22], [64, 18], [28, 34], [54, 34], [40, 44]];
@@ -661,7 +671,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
       <g>
         {/* Rain sensing plate */}
         <rect x={8} y={6} width={68} height={46} rx={4} fill="#1E293B" stroke={selected ? 'var(--accent)' : '#0F172A'} strokeWidth={selected ? 2.5 : 1.4} />
-        {[14, 22, 30, 38, 46, 54, 62, 68].map((rx) => (
+        {[14, 22, 30, 38, 46, 54, 62, 70].map((rx) => (
           <line key={rx} x1={rx} y1={12} x2={rx} y2={46} stroke="#CBD5E1" strokeWidth={2} />
         ))}
         {/* Progressive water droplets */}
@@ -670,7 +680,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         ))}
         {/* Blue comparator strip */}
         <rect x={12} y={54} width={60} height={26} rx={3} fill="#1D4ED8" stroke="#1E3A8A" strokeWidth={1.2} />
-        <circle cx={20} cy={67} r={2.8} fill="#22C55E" />
+        <circle cx={20} cy={67} r={2.8} fill={pwrLedFill} />
         <circle cx={64} cy={67} r={3.2} fill={raining ? '#38BDF8' : '#334155'} />
         <text x={42} y={-2} textAnchor="middle" fill={raining ? 'var(--primary)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
           RAIN {rainPct}%
@@ -750,15 +760,17 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
     return (
       <g>
         <rect x={6} y={14} width={60} height={68} rx={4} fill="#18181B" stroke={selected ? 'var(--primary)' : '#3F3F46'} strokeWidth={selected ? 2.5 : 1.4} />
-        {/* Classic 7 segments: a, b, c, d, e, f, g, dp */}
-        <rect x={22} y={22} width={24} height={5} rx={2} fill={segFill('a')} />
-        <rect x={46} y={27} width={5} height={19} rx={2} fill={segFill('b')} />
-        <rect x={46} y={50} width={5} height={19} rx={2} fill={segFill('c')} />
-        <rect x={22} y={69} width={24} height={5} rx={2} fill={segFill('d')} />
-        <rect x={17} y={50} width={5} height={19} rx={2} fill={segFill('e')} />
-        <rect x={17} y={27} width={5} height={19} rx={2} fill={segFill('f')} />
-        <rect x={22} y={45.5} width={24} height={5} rx={2} fill={segFill('g')} />
-        <circle cx={56} cy={71} r={3} fill={segFill('dp')} />
+        <g className="unflip-display">
+          {/* Classic 7 segments: a, b, c, d, e, f, g, dp */}
+          <rect x={22} y={22} width={24} height={5} rx={2} fill={segFill('a')} />
+          <rect x={46} y={27} width={5} height={19} rx={2} fill={segFill('b')} />
+          <rect x={46} y={50} width={5} height={19} rx={2} fill={segFill('c')} />
+          <rect x={22} y={69} width={24} height={5} rx={2} fill={segFill('d')} />
+          <rect x={17} y={50} width={5} height={19} rx={2} fill={segFill('e')} />
+          <rect x={17} y={27} width={5} height={19} rx={2} fill={segFill('f')} />
+          <rect x={22} y={45.5} width={24} height={5} rx={2} fill={segFill('g')} />
+          <circle cx={56} cy={71} r={3} fill={segFill('dp')} />
+        </g>
         {manifest.pins.map((p) => (
           <line key={p.id} x1={p.x} y1={p.y < 50 ? 6 : 82} x2={p.x} y2={p.y < 50 ? 14 : 90} stroke="#94A3B8" strokeWidth={2.2} />
         ))}
@@ -1062,20 +1074,22 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
     return (
       <g>
         <rect x={14} y={6} width={94} height={98} rx={5} fill="#18181B" stroke={selected ? 'var(--accent)' : '#3F3F46'} strokeWidth={selected ? 2.5 : 1.4} />
-        {rows.map((rowByte, r) =>
-          Array.from({ length: 8 }, (_, c) => {
-            const on = Boolean(rowByte & (1 << (7 - c)));
-            return (
-              <circle
-                key={`${r}-${c}`}
-                cx={24 + c * 10.5}
-                cy={18 + r * 10.5}
-                r={3.8}
-                fill={on ? '#EF4444' : '#334155'}
-              />
-            );
-          })
-        )}
+        <g className="unflip-display">
+          {rows.map((rowByte, r) =>
+            Array.from({ length: 8 }, (_, c) => {
+              const on = Boolean(rowByte & (1 << (7 - c)));
+              return (
+                <circle
+                  key={`${r}-${c}`}
+                  cx={24 + c * 10.5}
+                  cy={18 + r * 10.5}
+                  r={3.8}
+                  fill={on ? '#EF4444' : '#334155'}
+                />
+              );
+            })
+          )}
+        </g>
         <text x={61} y={-2} textAnchor="middle" fill="var(--text-primary)" fontSize={8.5} fontWeight={600} fontFamily="var(--font-mono)">
           MAX7219 8x8
         </text>
@@ -1255,7 +1269,7 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
             <g key={p.id}>
               <line x1={p.x} y1={108} x2={p.x} y2={118} stroke="#CBD5E1" strokeWidth={2.2} />
               <g transform={`translate(${p.x}, 90) rotate(-90)`}>
-                <text x={0} y={0} textAnchor="start" dominantBaseline="central" fill="#FEE2E2" fontSize={5.8} fontFamily="var(--font-mono)">
+                <text className="unflip-rot90" x={0} y={0} textAnchor="start" dominantBaseline="central" fill="#FEE2E2" fontSize={5.8} fontFamily="var(--font-mono)">
                   {p.id}
                 </text>
               </g>

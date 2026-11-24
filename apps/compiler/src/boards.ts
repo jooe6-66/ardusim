@@ -25,5 +25,5 @@ export const BOARD_SPECS: Record<BoardId, BoardCompileSpec> = {
 };
 
 export function isSupportedBoard(value: unknown): value is BoardId {
-  return typeof value === 'string' && value in BOARD_SPECS;
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(BOARD_SPECS, value);
 }

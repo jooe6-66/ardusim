@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CapacitanceUnit,
   CapacitorKind,
@@ -38,6 +38,71 @@ const LED_COLORS: Array<{ id: LedColor; hex: string; label: string }> = [
   { id: 'blue', hex: '#3B82F6', label: 'Blue' },
   { id: 'white', hex: '#F1F5F9', label: 'White' },
 ];
+
+interface NumericInputProps {
+  id: string;
+  value: number;
+  resetKey: string;
+  min?: number;
+  max?: number;
+  step?: number | 'any';
+  integer?: boolean;
+  onCommit: (val: number) => void;
+}
+
+const NumericInput: React.FC<NumericInputProps> = ({
+  id,
+  value,
+  resetKey,
+  min,
+  max,
+  step = 'any',
+  integer = false,
+  onCommit,
+}) => {
+  const [draft, setDraft] = useState(() => String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [value, resetKey, focused]);
+
+  return (
+    <input
+      id={id}
+      className="text-input"
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setDraft(raw);
+        if (raw.trim() === '') return;
+        const parsed = integer ? parseInt(raw, 10) : parseFloat(raw);
+        if (!Number.isFinite(parsed)) return;
+        if (min !== undefined && parsed < min) return;
+        if (max !== undefined && parsed > max) return;
+        onCommit(parsed);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const parsed = integer ? parseInt(draft, 10) : parseFloat(draft);
+        if (!Number.isFinite(parsed)) {
+          setDraft(String(value));
+          return;
+        }
+        let clamped = parsed;
+        if (min !== undefined && clamped < min) clamped = min;
+        if (max !== undefined && clamped > max) clamped = max;
+        setDraft(String(clamped));
+        if (clamped !== value) onCommit(clamped);
+      }}
+    />
+  );
+};
 
 const RESISTOR_PRESETS: Array<{ value: number; unit: ResistanceUnit; label: string }> = [
   { value: 220, unit: 'ohm', label: '220 Ω' },
@@ -111,6 +176,9 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
 }) => {
   const [btInput, setBtInput] = useState('');
   const [failedPreviews, setFailedPreviews] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    setBtInput('');
+  }, [selectedPart?.id]);
   if (!selectedPart && !selectedWire) {
     return (
       <>
@@ -241,17 +309,12 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
                 {t.valueLabel} & {t.unitLabel}
               </label>
               <div className="field-row">
-                <input
+                <NumericInput
                   id="res-val"
-                  className="text-input"
-                  type="number"
+                  resetKey={part.id}
                   min={0.1}
-                  step="any"
                   value={Number(part.props.value ?? 220)}
-                  onChange={(e) => {
-                    const num = parseFloat(e.target.value);
-                    if (Number.isFinite(num) && num > 0) onUpdatePartProps(part.id, { value: num });
-                  }}
+                  onCommit={(num) => onUpdatePartProps(part.id, { value: num })}
                 />
                 <select
                   className="select-input"
@@ -287,17 +350,12 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
                 {t.valueLabel} & {t.unitLabel}
               </label>
               <div className="field-row">
-                <input
+                <NumericInput
                   id="cap-val"
-                  className="text-input"
-                  type="number"
+                  resetKey={part.id}
                   min={0.1}
-                  step="any"
                   value={Number(part.props.value ?? 100)}
-                  onChange={(e) => {
-                    const num = parseFloat(e.target.value);
-                    if (Number.isFinite(num) && num > 0) onUpdatePartProps(part.id, { value: num });
-                  }}
+                  onCommit={(num) => onUpdatePartProps(part.id, { value: num })}
                 />
                 <select
                   className="select-input"
@@ -373,20 +431,16 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
                 <label className="field-label" htmlFor="diode-volt">
                   {part.props.model === 'zener' ? t.zenerVoltageLabel : t.forwardVoltageLabel} (V)
                 </label>
-                <input
+                <NumericInput
                   id="diode-volt"
-                  className="text-input"
-                  type="number"
+                  resetKey={`${part.id}-${String(part.props.model)}`}
                   min={0.1}
                   max={12}
                   step={0.1}
                   value={part.props.model === 'zener' ? Number(part.props.zenerVz ?? 3.3) : Number(part.props.vf ?? 0.7)}
-                  onChange={(e) => {
-                    const num = parseFloat(e.target.value);
-                    if (Number.isFinite(num) && num > 0) {
-                      onUpdatePartProps(part.id, part.props.model === 'zener' ? { zenerVz: num } : { vf: num });
-                    }
-                  }}
+                  onCommit={(num) =>
+                    onUpdatePartProps(part.id, part.props.model === 'zener' ? { zenerVz: num } : { vf: num })
+                  }
                 />
               </div>
             )}
@@ -927,17 +981,12 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             <div className="field-group">
               <label className="field-label" htmlFor="pot-val">{t.valueLabel} & {t.unitLabel}</label>
               <div className="field-row">
-                <input
+                <NumericInput
                   id="pot-val"
-                  className="text-input"
-                  type="number"
+                  resetKey={part.id}
                   min={1}
-                  step="any"
                   value={Number(part.props.value ?? 10)}
-                  onChange={(e) => {
-                    const num = parseFloat(e.target.value);
-                    if (Number.isFinite(num) && num > 0) onUpdatePartProps(part.id, { value: num });
-                  }}
+                  onCommit={(num) => onUpdatePartProps(part.id, { value: num })}
                 />
                 <select
                   className="select-input"
@@ -1110,17 +1159,15 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             </div>
             <div className="field-group">
               <label className="field-label" htmlFor="step-rev">{t.stepsPerRevLabel}</label>
-              <input
+              <NumericInput
                 id="step-rev"
-                className="text-input"
-                type="number"
+                resetKey={part.id}
                 min={8}
                 max={4096}
+                step={1}
+                integer
                 value={Number(part.props.stepsPerRev ?? 200)}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  if (Number.isFinite(n) && n >= 8) onUpdatePartProps(part.id, { stepsPerRev: n });
-                }}
+                onCommit={(n) => onUpdatePartProps(part.id, { stepsPerRev: n })}
               />
             </div>
           </>
@@ -1130,34 +1177,26 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
           <>
             <div className="field-group">
               <label className="field-label" htmlFor="gps-lat">{t.latLabel}</label>
-              <input
+              <NumericInput
                 id="gps-lat"
-                className="text-input"
-                type="number"
+                resetKey={part.id}
                 step={0.001}
                 min={-90}
                 max={90}
                 value={Number(part.props.lat ?? -6.2088)}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (Number.isFinite(v)) onUpdatePartProps(part.id, { lat: v });
-                }}
+                onCommit={(v) => onUpdatePartProps(part.id, { lat: v })}
               />
             </div>
             <div className="field-group">
               <label className="field-label" htmlFor="gps-lon">{t.lonLabel}</label>
-              <input
+              <NumericInput
                 id="gps-lon"
-                className="text-input"
-                type="number"
+                resetKey={part.id}
                 step={0.001}
                 min={-180}
                 max={180}
                 value={Number(part.props.lon ?? 106.8456)}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (Number.isFinite(v)) onUpdatePartProps(part.id, { lon: v });
-                }}
+                onCommit={(v) => onUpdatePartProps(part.id, { lon: v })}
               />
             </div>
             <div className="field-group">

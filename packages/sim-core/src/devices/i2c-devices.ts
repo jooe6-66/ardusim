@@ -21,6 +21,20 @@ export class I2CBusRouter implements TWIEventHandler {
     this.activeDevice = null;
   }
 
+  syncDevices(devices: I2CDevice[]): void {
+    const next = new Map<number, I2CDevice>();
+    for (const dev of devices) {
+      next.set(dev.address & 0x7f, dev);
+    }
+    this.devices = next;
+    if (this.activeDevice) {
+      const preserved = next.get(this.activeDevice.address & 0x7f);
+      if (preserved !== this.activeDevice) {
+        this.activeDevice = null;
+      }
+    }
+  }
+
   register(device: I2CDevice): void {
     this.devices.set(device.address & 0x7f, device);
   }
@@ -172,6 +186,7 @@ export class OledSsd1306 implements I2CDevice {
   private gddram = new Uint8Array(128 * 8);
   private displayOn = false;
   private inverted = false;
+  private revision = 0;
   private mode: 'control' | 'command' | 'data' = 'control';
   private pendingCmd: number | null = null;
   private cmdArgs: number[] = [];
@@ -210,7 +225,10 @@ export class OledSsd1306 implements I2CDevice {
 
     if (this.mode === 'data') {
       const idx = (this.page & 7) * 128 + (this.col & 127);
-      this.gddram[idx] = value;
+      if (this.gddram[idx] !== value) {
+        this.gddram[idx] = value;
+        this.revision++;
+      }
       if (this.memMode === 0) {
         this.col++;
         if (this.col > this.colEnd) {
@@ -247,11 +265,27 @@ export class OledSsd1306 implements I2CDevice {
   }
 
   private handleCommand(cmd: number): void {
-    if (cmd === 0xae) this.displayOn = false;
-    else if (cmd === 0xaf) this.displayOn = true;
-    else if (cmd === 0xa6) this.inverted = false;
-    else if (cmd === 0xa7) this.inverted = true;
-    else if (cmd >= 0x00 && cmd <= 0x0f) this.col = (this.col & 0xf0) | (cmd & 0x0f);
+    if (cmd === 0xae) {
+      if (this.displayOn) {
+        this.displayOn = false;
+        this.revision++;
+      }
+    } else if (cmd === 0xaf) {
+      if (!this.displayOn) {
+        this.displayOn = true;
+        this.revision++;
+      }
+    } else if (cmd === 0xa6) {
+      if (this.inverted) {
+        this.inverted = false;
+        this.revision++;
+      }
+    } else if (cmd === 0xa7) {
+      if (!this.inverted) {
+        this.inverted = true;
+        this.revision++;
+      }
+    } else if (cmd >= 0x00 && cmd <= 0x0f) this.col = (this.col & 0xf0) | (cmd & 0x0f);
     else if (cmd >= 0x10 && cmd <= 0x1f) this.col = (this.col & 0x0f) | ((cmd & 0x0f) << 4);
     else if (cmd >= 0xb0 && cmd <= 0xb7) this.page = cmd & 0x07;
     else if (
@@ -294,6 +328,7 @@ export class OledSsd1306 implements I2CDevice {
       buffer: Array.from(this.gddram),
       displayOn: this.displayOn,
       inverted: this.inverted,
+      revision: this.revision,
     };
   }
 }

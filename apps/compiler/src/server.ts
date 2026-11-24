@@ -3,13 +3,20 @@ import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { BOARD_SPECS, isSupportedBoard } from './boards.js';
-import { CompileError, CompilerService } from './runner.js';
+import { CompileError, CompileResult, CompilerService, validateSketchSafety } from './runner.js';
 
 export interface ServerOptions {
   rateLimitPerMin?: number;
   maxConcurrentCompiles?: number;
   maxQueueSize?: number;
+  queueTimeoutMs?: number;
   corsOrigins?: string[];
+}
+
+export interface CompileService {
+  resolveEngine(): Promise<'arduino-cli'>;
+  compile(board: import('@ardusim/sim-core').BoardId, sketch: string): Promise<CompileResult>;
+  getCached?(board: import('@ardusim/sim-core').BoardId, sketch: string): CompileResult | null;
 }
 
 class SimpleRateLimiter {
@@ -43,6 +50,15 @@ function parseIntEnv(raw: string | undefined, fallback: number, min: number): nu
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
 
+function parseTrustProxy(raw: string | undefined): boolean | number {
+  if (raw === undefined || raw.trim() === '') return 1;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n >= 0 ? n : 1;
+}
+
 export function parseCorsOrigins(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -64,12 +80,13 @@ export function isOriginAllowed(origin: string | undefined, patterns: string[]):
 }
 
 export function createCompilerServer(
-  compiler = new CompilerService(),
+  compiler: CompileService = new CompilerService(),
   opts: ServerOptions = {}
 ) {
   const rateLimitPerMin = opts.rateLimitPerMin ?? parseIntEnv(process.env.RATE_LIMIT_PER_MIN, 120, 1);
   const maxConcurrent = opts.maxConcurrentCompiles ?? parseIntEnv(process.env.MAX_CONCURRENT_COMPILES, 2, 1);
   const maxQueueSize = opts.maxQueueSize ?? parseIntEnv(process.env.MAX_QUEUE_SIZE, 24, 0);
+  const queueTimeoutMs = opts.queueTimeoutMs ?? parseIntEnv(process.env.COMPILE_QUEUE_TIMEOUT_MS, 60_000, 100);
   const allowedOrigins = opts.corsOrigins ?? parseCorsOrigins(process.env.CORS_ORIGIN);
   const limiter = new SimpleRateLimiter(rateLimitPerMin);
   let activeCompiles = 0;
@@ -80,7 +97,11 @@ export function createCompilerServer(
     off?: (ev: 'close', cb: () => void) => unknown;
     removeListener?: (ev: 'close', cb: () => void) => unknown;
     writableEnded?: boolean;
-  }): Promise<'acquired' | 'full' | 'aborted'> => {
+    destroyed?: boolean;
+  }): Promise<'acquired' | 'full' | 'aborted' | 'timeout'> => {
+    if (rawRes.destroyed || rawRes.writableEnded) {
+      return Promise.resolve('aborted');
+    }
     if (activeCompiles < maxConcurrent) {
       activeCompiles++;
       return Promise.resolve('acquired');
@@ -90,24 +111,40 @@ export function createCompilerServer(
     }
     return new Promise((resolve) => {
       let settled = false;
-      const detach = () => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = () => {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
         if (rawRes.off) rawRes.off('close', onClose);
         else rawRes.removeListener?.('close', onClose);
+      };
+      const removeFromQueue = () => {
+        const idx = compileQueue.indexOf(grant);
+        if (idx >= 0) compileQueue.splice(idx, 1);
       };
       const grant = () => {
         if (settled) return;
         settled = true;
-        detach();
+        cleanup();
         activeCompiles++;
         resolve('acquired');
       };
       const onClose = () => {
         if (settled || rawRes.writableEnded) return;
         settled = true;
-        const idx = compileQueue.indexOf(grant);
-        if (idx >= 0) compileQueue.splice(idx, 1);
+        cleanup();
+        removeFromQueue();
         resolve('aborted');
       };
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        removeFromQueue();
+        resolve('timeout');
+      }, queueTimeoutMs);
       compileQueue.push(grant);
       rawRes.on('close', onClose);
     });
@@ -122,7 +159,7 @@ export function createCompilerServer(
   const app = Fastify({
     logger: false,
     bodyLimit: 128 * 1024,
-    trustProxy: true,
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY) as boolean | string,
   });
 
   app.register(cors, {
@@ -185,13 +222,34 @@ export function createCompilerServer(
       return reply.status(400).send({ error: 'Field "sketch" must be a string' });
     }
 
+    try {
+      validateSketchSafety(sketch);
+    } catch (err) {
+      if (err instanceof CompileError) {
+        return reply.status(err.statusCode).send({
+          error: err.message,
+          logs: err.logs,
+          diagnostics: err.diagnostics,
+        });
+      }
+      throw err;
+    }
+
+    const cached = compiler.getCached?.(board, sketch);
+    if (cached) {
+      return reply.status(200).send(cached);
+    }
+
     const slot = await acquireSlot(reply.raw);
     if (slot === 'aborted') {
       return;
     }
-    if (slot === 'full') {
+    if (slot === 'full' || slot === 'timeout') {
       return reply.status(503).send({
-        error: 'Compiler queue is full, please retry in a moment.',
+        error:
+          slot === 'timeout'
+            ? 'Compiler queue timed out, please retry in a moment.'
+            : 'Compiler queue is full, please retry in a moment.',
       });
     }
 

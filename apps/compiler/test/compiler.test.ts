@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { AvrSimulator, MultiMcuSimulator, PartInstance, PartManifest, Wire, parseIntelHex } from '@ardusim/sim-core';
-import { CompileError, CompilerService, parseTimeoutEnv } from '../src/runner.js';
+import { isSupportedBoard } from '../src/boards.js';
+import { CompileError, CompilerService, parseTimeoutEnv, validateSketchSafety } from '../src/runner.js';
 import { createCompilerServer, isOriginAllowed, parseCorsOrigins } from '../src/server.js';
 
 const BLINK_SERIAL_SKETCH = `
@@ -490,4 +491,51 @@ test('CompilerService persists AVR core.a cache and cleans up per-sketch cache d
   } finally {
     await rm(buildCachePath, { recursive: true, force: true });
   }
+});
+
+test('validateSketchSafety blocks #include bypasses and allows valid includes and comments', () => {
+  const blocked = [
+    '#include "/etc/passwd"\nvoid setup(){}',
+    '#include <../secret.h>\nvoid setup(){}',
+    '#include "foo/../../bar.h"\nvoid setup(){}',
+    '#include \\\n"/etc/passwd"\nvoid setup(){}',
+    '#define F "/etc/passwd"\n#include F\nvoid setup(){}',
+    '#include_next <stdlib.h>\nvoid setup(){}',
+    '#import "/etc/passwd"\nvoid setup(){}',
+  ];
+  for (const sketch of blocked) {
+    assert.throws(() => validateSketchSafety(sketch), CompileError, `Expected block for: ${sketch}`);
+  }
+
+  const allowed = [
+    '#include <Arduino.h>\n#include "Wire.h"\nvoid setup(){} void loop(){}',
+    '// #include "/etc/passwd"\n/* #include <../bad.h> */\nvoid setup(){} void loop(){}',
+  ];
+  for (const sketch of allowed) {
+    assert.doesNotThrow(() => validateSketchSafety(sketch), `Expected allow for: ${sketch}`);
+  }
+});
+
+test('isSupportedBoard rejects Object.prototype keys and /api/compile returns 400', async () => {
+  for (const bad of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(isSupportedBoard(bad), false, `Expected false for ${bad}`);
+  }
+  assert.equal(isSupportedBoard('arduino-uno'), true);
+
+  const stubCompiler = {
+    resolveEngine: async () => 'arduino-cli' as const,
+    compile: async () => ({ hex: ':00000001FF', cached: false, engine: 'arduino-cli' as const, durationMs: 1, logs: '' }),
+  } as unknown as CompilerService;
+  const app = createCompilerServer(stubCompiler, { rateLimitPerMin: 50 });
+
+  for (const board of ['toString', 'constructor', '__proto__']) {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/compile',
+      payload: { board, sketch: 'void setup(){} void loop(){}' },
+    });
+    assert.equal(res.statusCode, 400);
+  }
+
+  await app.close();
 });

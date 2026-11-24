@@ -32,7 +32,7 @@ function buildUnoPins(): PinDef[] {
     { id: '5V', label: '5V', type: 'power', fixedVoltage: 5.0 },
     { id: 'GND.2', label: 'GND', type: 'gnd', fixedVoltage: 0 },
     { id: 'GND.3', label: 'GND', type: 'gnd', fixedVoltage: 0 },
-    { id: 'VIN', label: 'VIN', type: 'power', fixedVoltage: 5.0 },
+    { id: 'VIN', label: 'VIN', type: 'power' },
   ];
   bottomPower.forEach((p, idx) => pins.push({ ...p, x: 110 + idx * 12, y: 182, exitDir: 'down' }));
 
@@ -86,7 +86,7 @@ function buildNanoPins(): PinDef[] {
     { id: '5V', label: '5V', type: 'power', fixedVoltage: 5.0 },
     { id: 'RESET.2', label: 'RST', type: 'digital' },
     { id: 'GND.2', label: 'GND', type: 'gnd', fixedVoltage: 0 },
-    { id: 'VIN', label: 'VIN', type: 'power', fixedVoltage: 5.0 },
+    { id: 'VIN', label: 'VIN', type: 'power' },
   ];
 
   const pins: PinDef[] = [];
@@ -141,7 +141,7 @@ function buildMegaPins(): PinDef[] {
     { id: '5V', label: '5V', type: 'power', fixedVoltage: 5.0 },
     { id: 'GND.2', label: 'GND', type: 'gnd', fixedVoltage: 0 },
     { id: 'GND.3', label: 'GND', type: 'gnd', fixedVoltage: 0 },
-    { id: 'VIN', label: 'VIN', type: 'power', fixedVoltage: 5.0 },
+    { id: 'VIN', label: 'VIN', type: 'power' },
   ];
   bottomPower.forEach((p, i) => pins.push({ ...p, x: 96 + i * 12, y: 202, exitDir: 'down' }));
 

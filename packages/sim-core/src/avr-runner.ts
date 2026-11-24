@@ -29,7 +29,7 @@ import {
   twiConfig,
   usart0Config,
 } from 'avr8js';
-import { Ds3231Rtc, I2CBusRouter, Lcd1602I2C, Mpu6050Imu, OledSsd1306 } from './devices/i2c-devices.js';
+import { Ds3231Rtc, I2CBusRouter, I2CDevice, Lcd1602I2C, Mpu6050Imu, OledSsd1306 } from './devices/i2c-devices.js';
 import {
   Max7219Matrix,
   Mfrc522Device,
@@ -92,16 +92,16 @@ export interface AvrSimulationCallbacks {
 interface AttachedPeripherals {
   pinCallbacks: Map<string, Array<(state: PinState) => void>>;
   drivenMcuPins: Set<string>;
-  servos: Map<string, ServoDevice>;
-  servos360: Map<string, ContinuousServoDevice>;
-  buzzers: Map<string, BuzzerDevice>;
+  servos: Map<string, { dev: ServoDevice; sigKey: string }>;
+  servos360: Map<string, { dev: ContinuousServoDevice; sigKey: string }>;
+  buzzers: Map<string, { dev: BuzzerDevice; sigKey: string }>;
   ultrasonics: Map<string, { dev: HcSr04Device; trigKey: string; echoKey: string }>;
   dhts: Map<string, { dev: DhtDevice; dataKey: string }>;
   lcds: Map<string, Lcd1602I2C>;
   oleds: Map<string, OledSsd1306>;
   rtcs: Map<string, Ds3231Rtc>;
   imus: Map<string, Mpu6050Imu>;
-  max7219s: Map<string, Max7219Matrix>;
+  max7219s: Map<string, { dev: Max7219Matrix; usesHwSpi: boolean }>;
   neoPixels: Map<string, { dev: NeoPixelStrip; dinKey: string }>;
   steppers: Map<string, StepperMotorDevice>;
   rfids: Map<string, Mfrc522Device>;
@@ -129,6 +129,7 @@ export class AvrSimulator {
   private readonly solver = new PassiveCircuitSolver();
   private readonly rxQueues: number[][] = [];
   private readonly pinAcc = new Map<string, PinAccumulator>();
+  private readonly portPrevStates = new Map<AvrPortName, Uint8Array>();
   private externalSyncHandler?: () => void;
 
   private parts: PartInstance[] = [];
@@ -233,14 +234,15 @@ export class AvrSimulator {
           miso = rfid.transferByte(mosi);
         }
       }
-      for (const mat of this.attached.max7219s.values()) {
-        mat.onSpiByte(mosi);
+      for (const entry of this.attached.max7219s.values()) {
+        if (entry.usesHwSpi) entry.dev.onSpiByte(mosi);
       }
       return miso;
     };
 
     for (const [portName, port] of this.ports.entries()) {
       const prevStates = new Uint8Array(8).fill(255);
+      this.portPrevStates.set(portName, prevStates);
       for (let bit = 0; bit < 8; bit++) {
         this.pinAcc.set(`${portName}:${bit}`, {
           highCycles: 0,
@@ -344,6 +346,10 @@ export class AvrSimulator {
     this.bindSmartPeripherals();
   }
 
+  updateSharedNetlist(netlist: NetlistResult): void {
+    this.netlist = netlist;
+  }
+
   private findConnectedMcuPin(
     partId: string,
     pinId: string
@@ -368,21 +374,26 @@ export class AvrSimulator {
     const prev = this.attached;
     const pinCallbacks = new Map<string, Array<(state: PinState) => void>>();
     const drivenMcuPins = new Set<string>();
-    const servos = new Map<string, ServoDevice>();
-    const servos360 = new Map<string, ContinuousServoDevice>();
-    const buzzers = new Map<string, BuzzerDevice>();
+    const servos = new Map<string, { dev: ServoDevice; sigKey: string }>();
+    const servos360 = new Map<string, { dev: ContinuousServoDevice; sigKey: string }>();
+    const buzzers = new Map<string, { dev: BuzzerDevice; sigKey: string }>();
     const ultrasonics = new Map<string, { dev: HcSr04Device; trigKey: string; echoKey: string }>();
     const dhts = new Map<string, { dev: DhtDevice; dataKey: string }>();
     const lcds = new Map<string, Lcd1602I2C>();
     const oleds = new Map<string, OledSsd1306>();
     const rtcs = new Map<string, Ds3231Rtc>();
     const imus = new Map<string, Mpu6050Imu>();
-    const max7219s = new Map<string, Max7219Matrix>();
+    const max7219s = new Map<string, { dev: Max7219Matrix; usesHwSpi: boolean }>();
     const neoPixels = new Map<string, { dev: NeoPixelStrip; dinKey: string }>();
     const steppers = new Map<string, StepperMotorDevice>();
     const rfids = new Map<string, Mfrc522Device>();
     const gpsDevices = new Map<string, { dev: SoftUartDevice; txKey: string; lastEmitMs: number }>();
     const btDevices = new Map<string, { dev: SoftUartDevice; txKey: string; rxKey: string }>();
+    const nextI2cDevices: I2CDevice[] = [];
+    const finite = (v: unknown, fb: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fb;
+    };
 
     const addPinCb = (port: AvrPortName, bit: number, cb: (state: PinState) => void) => {
       const k = `${port}:${bit}`;
@@ -394,10 +405,11 @@ export class AvrSimulator {
       list.push(cb);
     };
 
-    this.i2cBus.clear();
     const mcuPart = this.getMcuPart();
     const sdaPinId = mcuPart?.type === 'arduino-mega' ? '20' : 'A4';
     const sclPinId = mcuPart?.type === 'arduino-mega' ? '21' : 'A5';
+    const hwMosiKey = this.board === 'arduino-mega' ? 'B:2' : 'B:3';
+    const hwSckKey = this.board === 'arduino-mega' ? 'B:1' : 'B:5';
     const mcuSdaNet = mcuPart ? this.netlist.pinToNet.get(`${mcuPart.id}:${sdaPinId}`) : undefined;
     const mcuSclNet = mcuPart ? this.netlist.pinToNet.get(`${mcuPart.id}:${sclPinId}`) : undefined;
 
@@ -422,7 +434,7 @@ export class AvrSimulator {
               old && old.trigKey === trigKey && old.echoKey === echoKey
                 ? old.dev
                 : new HcSr04Device(this.cpu, UNO_CLOCK_HZ, (high) => echoPort.setPin(echo.avrBit, high));
-            dev.distanceCm = Number(part.props.distanceCm ?? 45);
+            dev.distanceCm = finite(part.props.distanceCm, 45);
             if (!old || old.echoKey !== echoKey) echoPort.setPin(echo.avrBit, false);
             addPinCb(trig.avrPort, trig.avrBit, (st) => dev.onTrigChange(st === PinState.High));
             ultrasonics.set(part.id, { dev, trigKey, echoKey });
@@ -440,8 +452,8 @@ export class AvrSimulator {
               old && old.dataKey === dataKey
                 ? old.dev
                 : new DhtDevice(this.cpu, UNO_CLOCK_HZ, (high) => dataPort.setPin(data.avrBit, high));
-            dev.temperatureC = Number(part.props.tempC ?? 27.5);
-            dev.humidityPct = Number(part.props.humidityPct ?? 60);
+            dev.temperatureC = finite(part.props.tempC, 27.5);
+            dev.humidityPct = finite(part.props.humidityPct, 60);
             dev.model = part.props.model === 'DHT11' ? 'DHT11' : 'DHT22';
             if (!old || old.dataKey !== dataKey) dataPort.setPin(data.avrBit, true);
             addPinCb(data.avrPort, data.avrBit, (st) => dev.onLineChange(st === PinState.Low));
@@ -451,60 +463,74 @@ export class AvrSimulator {
       } else if (part.type === 'servo') {
         const sig = this.findConnectedMcuPin(part.id, 'SIG');
         if (sig) {
-          const dev = prev.servos.get(part.id) ?? new ServoDevice(this.cpu, UNO_CLOCK_HZ);
+          const sigKey = `${sig.avrPort}:${sig.avrBit}`;
+          const old = prev.servos.get(part.id);
+          const dev = old && old.sigKey === sigKey ? old.dev : new ServoDevice(this.cpu, UNO_CLOCK_HZ);
           addPinCb(sig.avrPort, sig.avrBit, (st) => dev.onSignalChange(st === PinState.High));
-          servos.set(part.id, dev);
+          servos.set(part.id, { dev, sigKey });
         }
       } else if (part.type === 'servo-360') {
         const sig = this.findConnectedMcuPin(part.id, 'SIG');
         if (sig) {
-          const maxRpm = Number(part.props.maxRpm ?? 120);
-          const dev = prev.servos360.get(part.id) ?? new ContinuousServoDevice(this.cpu, UNO_CLOCK_HZ, maxRpm);
+          const sigKey = `${sig.avrPort}:${sig.avrBit}`;
+          const maxRpm = finite(part.props.maxRpm, 120);
+          const old = prev.servos360.get(part.id);
+          const dev =
+            old && old.sigKey === sigKey
+              ? old.dev
+              : new ContinuousServoDevice(this.cpu, UNO_CLOCK_HZ, maxRpm);
           dev.maxRpm = maxRpm;
           addPinCb(sig.avrPort, sig.avrBit, (st) => dev.onSignalChange(st === PinState.High));
-          servos360.set(part.id, dev);
+          servos360.set(part.id, { dev, sigKey });
         }
       } else if (part.type === 'buzzer') {
         const pos = this.findConnectedMcuPin(part.id, '+');
         if (pos) {
-          const dev = prev.buzzers.get(part.id) ?? new BuzzerDevice(this.cpu, UNO_CLOCK_HZ);
+          const sigKey = `${pos.avrPort}:${pos.avrBit}`;
+          const old = prev.buzzers.get(part.id);
+          const dev = old && old.sigKey === sigKey ? old.dev : new BuzzerDevice(this.cpu, UNO_CLOCK_HZ);
           addPinCb(pos.avrPort, pos.avrBit, (st) => dev.onSignalChange(st === PinState.High));
-          buzzers.set(part.id, dev);
+          buzzers.set(part.id, { dev, sigKey });
         }
       } else if (part.type === 'lcd-1602-i2c') {
-        const addr = Number(part.props.i2cAddress ?? 0x27);
+        const addr = finite(part.props.i2cAddress, 0x27);
         const existing = prev.lcds.get(part.id);
         const lcd = existing && existing.address === addr ? existing : new Lcd1602I2C(addr);
         lcds.set(part.id, lcd);
-        if (isI2cWired(part.id)) this.i2cBus.register(lcd);
+        if (isI2cWired(part.id)) nextI2cDevices.push(lcd);
       } else if (part.type === 'oled-ssd1306') {
-        const addr = Number(part.props.i2cAddress ?? 0x3c);
+        const addr = finite(part.props.i2cAddress, 0x3c);
         const existing = prev.oleds.get(part.id);
         const oled = existing && existing.address === addr ? existing : new OledSsd1306(addr);
         oleds.set(part.id, oled);
-        if (isI2cWired(part.id)) this.i2cBus.register(oled);
+        if (isI2cWired(part.id)) nextI2cDevices.push(oled);
       } else if (part.type === 'ds3231-rtc') {
         const rtc = prev.rtcs.get(part.id) ?? new Ds3231Rtc();
         rtcs.set(part.id, rtc);
-        if (isI2cWired(part.id)) this.i2cBus.register(rtc);
+        if (isI2cWired(part.id)) nextI2cDevices.push(rtc);
       } else if (part.type === 'mpu6050') {
-        const addr = Number(part.props.i2cAddress ?? 0x68);
+        const addr = finite(part.props.i2cAddress, 0x68);
         const existing = prev.imus.get(part.id);
         const imu = existing && existing.address === addr ? existing : new Mpu6050Imu(addr);
-        imu.pitchDeg = Number(part.props.pitchDeg ?? 0);
-        imu.rollDeg = Number(part.props.rollDeg ?? 0);
-        imu.tempC = Number(part.props.tempC ?? 25);
+        imu.pitchDeg = finite(part.props.pitchDeg, 0);
+        imu.rollDeg = finite(part.props.rollDeg, 0);
+        imu.tempC = finite(part.props.tempC, 25);
         imus.set(part.id, imu);
-        if (isI2cWired(part.id)) this.i2cBus.register(imu);
+        if (isI2cWired(part.id)) nextI2cDevices.push(imu);
       } else if (part.type === 'max7219') {
         const din = this.findConnectedMcuPin(part.id, 'DIN');
         const clk = this.findConnectedMcuPin(part.id, 'CLK');
         const cs = this.findConnectedMcuPin(part.id, 'CS');
-        const mat = prev.max7219s.get(part.id) ?? new Max7219Matrix();
-        if (din) addPinCb(din.avrPort, din.avrBit, (st) => mat.onDinChange(st === PinState.High));
-        if (clk) addPinCb(clk.avrPort, clk.avrBit, (st) => mat.onClkChange(st === PinState.High));
-        if (cs) addPinCb(cs.avrPort, cs.avrBit, (st) => mat.onCsChange(st === PinState.High));
-        max7219s.set(part.id, mat);
+        const usesHwSpi =
+          din !== null &&
+          clk !== null &&
+          `${din.avrPort}:${din.avrBit}` === hwMosiKey &&
+          `${clk.avrPort}:${clk.avrBit}` === hwSckKey;
+        const dev = prev.max7219s.get(part.id)?.dev ?? new Max7219Matrix();
+        if (din) addPinCb(din.avrPort, din.avrBit, (st) => dev.onDinChange(st === PinState.High));
+        if (clk) addPinCb(clk.avrPort, clk.avrBit, (st) => dev.onClkChange(st === PinState.High));
+        if (cs) addPinCb(cs.avrPort, cs.avrBit, (st) => dev.onCsChange(st === PinState.High));
+        max7219s.set(part.id, { dev, usesHwSpi });
       } else if (part.type === 'neopixel-strip') {
         const din = this.findConnectedMcuPin(part.id, 'DIN');
         if (din) {
@@ -516,7 +542,7 @@ export class AvrSimulator {
         }
       } else if (part.type === 'stepper') {
         const dev = prev.steppers.get(part.id) ?? new StepperMotorDevice();
-        dev.stepsPerRev = Number(part.props.stepsPerRev ?? 200);
+        dev.stepsPerRev = finite(part.props.stepsPerRev, 200);
         const coilPins: Array<['IN1' | 'IN2' | 'IN3' | 'IN4', 0 | 1 | 2 | 3]> = [
           ['IN1', 0],
           ['IN2', 1],
@@ -586,6 +612,22 @@ export class AvrSimulator {
       }
     }
 
+    this.i2cBus.syncDevices(nextI2cDevices);
+
+    // Dispose removed or replaced clock-event peripherals so stale timers stop firing
+    for (const [id, old] of prev.ultrasonics) {
+      if (ultrasonics.get(id)?.dev !== old.dev) old.dev.dispose();
+    }
+    for (const [id, old] of prev.dhts) {
+      if (dhts.get(id)?.dev !== old.dev) old.dev.dispose();
+    }
+    for (const [id, old] of prev.gpsDevices) {
+      if (gpsDevices.get(id)?.dev !== old.dev) old.dev.dispose();
+    }
+    for (const [id, old] of prev.btDevices) {
+      if (btDevices.get(id)?.dev !== old.dev) old.dev.dispose();
+    }
+
     this.attached = {
       pinCallbacks,
       drivenMcuPins,
@@ -621,6 +663,34 @@ export class AvrSimulator {
   }
 
   reset(): void {
+    for (const old of this.attached.ultrasonics.values()) old.dev.dispose();
+    for (const old of this.attached.dhts.values()) old.dev.dispose();
+    for (const old of this.attached.gpsDevices.values()) old.dev.dispose();
+    for (const old of this.attached.btDevices.values()) old.dev.dispose();
+    this.attached = {
+      pinCallbacks: new Map(),
+      drivenMcuPins: new Set(),
+      servos: new Map(),
+      servos360: new Map(),
+      buzzers: new Map(),
+      ultrasonics: new Map(),
+      dhts: new Map(),
+      lcds: new Map(),
+      oleds: new Map(),
+      rtcs: new Map(),
+      imus: new Map(),
+      max7219s: new Map(),
+      neoPixels: new Map(),
+      steppers: new Map(),
+      rfids: new Map(),
+      gpsDevices: new Map(),
+      btDevices: new Map(),
+    };
+    this.i2cBus.clear();
+    for (const prevStates of this.portPrevStates.values()) {
+      prevStates.fill(255);
+    }
+
     this.cpu.reset();
     for (const u of this.usarts) u.reset();
     this.spi.reset();
@@ -631,6 +701,16 @@ export class AvrSimulator {
       acc.highCycles = 0;
       acc.lastCycle = 0;
       acc.lastHigh = false;
+    }
+
+    if (this.parts.length > 0) {
+      this.netlist = buildNetlist(this.parts, this.wires, this.manifests, {
+        pressedButtons: this.pressedButtons,
+        pressedKeypadKeys: this.pressedKeypadKeys,
+        energizedRelays: this.energizedRelays,
+      });
+      this.bindSmartPeripherals();
+      this.syncExternalInputs();
     }
   }
 
@@ -743,9 +823,12 @@ export class AvrSimulator {
     for (const [partId, entry] of this.attached.gpsDevices.entries()) {
       if (currentTimeMs - entry.lastEmitMs >= 1000) {
         const part = this.parts.find((p) => p.id === partId);
-        const lat = Number(part?.props.lat ?? -6.2088);
-        const lon = Number(part?.props.lon ?? 106.8456);
-        const speed = Number(part?.props.speedKnots ?? 1.5);
+        const rawLat = Number(part?.props.lat);
+        const rawLon = Number(part?.props.lon);
+        const rawSpeed = Number(part?.props.speedKnots);
+        const lat = Number.isFinite(rawLat) ? rawLat : -6.2088;
+        const lon = Number.isFinite(rawLon) ? rawLon : 106.8456;
+        const speed = Number.isFinite(rawSpeed) ? rawSpeed : 1.5;
         entry.dev.enqueueText(buildNmeaSentence(lat, lon, speed));
         entry.lastEmitMs = currentTimeMs;
       }
@@ -787,17 +870,17 @@ export class AvrSimulator {
 
   collectAttachedSnapshot(dutyByPortBit: Map<string, number>) {
     const servoAngles: Record<string, number> = {};
-    for (const [id, dev] of this.attached.servos.entries()) servoAngles[id] = dev.angleDeg;
+    for (const [id, entry] of this.attached.servos.entries()) servoAngles[id] = entry.dev.angleDeg;
 
     const servo360States: Record<string, Servo360VisualState> = {};
-    for (const [id, dev] of this.attached.servos360.entries()) {
-      const st = dev.getState();
+    for (const [id, entry] of this.attached.servos360.entries()) {
+      const st = entry.dev.getState();
       servo360States[id] = st;
       servoAngles[id] = Math.round(st.angleDeg);
     }
 
     const buzzerHz: Record<string, number> = {};
-    for (const [id, dev] of this.attached.buzzers.entries()) buzzerHz[id] = dev.sampleAndReset();
+    for (const [id, entry] of this.attached.buzzers.entries()) buzzerHz[id] = entry.dev.sampleAndReset();
 
     const lcdDisplays: Record<string, LcdDisplayState> = {};
     for (const [id, dev] of this.attached.lcds.entries()) lcdDisplays[id] = dev.getState();
@@ -806,7 +889,7 @@ export class AvrSimulator {
     for (const [id, dev] of this.attached.oleds.entries()) oledDisplays[id] = dev.getState();
 
     const max7219Displays: Record<string, Max7219State> = {};
-    for (const [id, dev] of this.attached.max7219s.entries()) max7219Displays[id] = dev.getState();
+    for (const [id, entry] of this.attached.max7219s.entries()) max7219Displays[id] = entry.dev.getState();
 
     const neoPixelStrips: Record<string, Array<[number, number, number]>> = {};
     for (const [id, entry] of this.attached.neoPixels.entries()) {
@@ -1089,6 +1172,9 @@ export class MultiMcuSimulator {
           pressedKeypadKeys: this.pressedKeypadKeys,
           energizedRelays: this.energizedRelays,
         });
+        for (const sim of this.sims.values()) {
+          sim.updateSharedNetlist(this.netlist);
+        }
         this.rebuildUartRoutes();
         lastSolved = this.solver.solve(this.parts, this.manifests, this.netlist, allMcuPins, dtSeconds, false);
       }

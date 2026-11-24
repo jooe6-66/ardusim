@@ -94,14 +94,43 @@ function triggerCompilerWake(baseUrl: string): void {
     if (m) {
       fetch(`https://snapdeploy.dev/api/public/wake/${encodeURIComponent(m[1])}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      }).catch(() => {});
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error('wake failed');
+        })
+        .catch(() => {
+          fetch(`${baseUrl}/api/health`, { mode: 'no-cors' }).catch(() => {});
+        });
       return;
     }
   } catch {
     // fallback below
   }
   fetch(`${baseUrl}/api/health`, { mode: 'no-cors' }).catch(() => {});
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  externalSignal?: AbortSignal
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
 }
 
 function tidyUnroutedWires(parts: PartInstance[], wires: Wire[]): Wire[] {
@@ -195,19 +224,26 @@ function isJsonResponse(res: Response): boolean {
 async function compileWithWakeRetry(
   board: BoardId,
   sketch: string,
-  onWaking: (elapsedSec: number) => void
+  onWaking: (elapsedSec: number) => void,
+  signal?: AbortSignal
 ): Promise<Response> {
   const postCompile = () =>
-    fetch(`${COMPILER_BASE}/api/compile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ board, sketch }),
-    });
+    fetchWithTimeout(
+      `${COMPILER_BASE}/api/compile`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board, sketch }),
+      },
+      45_000,
+      signal
+    );
 
   try {
     const first = await postCompile();
     if (isJsonResponse(first)) return first;
   } catch {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     if (isLocalCompilerUrl(COMPILER_BASE) || navigator.onLine === false) throw new Error('offline');
   }
 
@@ -222,15 +258,30 @@ async function compileWithWakeRetry(
   triggerCompilerWake(COMPILER_BASE);
 
   while (Date.now() - startedAt < maxWaitMs) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     onWaking(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise<void>((resolve, reject) => {
+      const id = window.setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, 4000);
+      const onAbort = () => {
+        window.clearTimeout(id);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
     try {
-      const health = await fetch(`${COMPILER_BASE}/api/health`);
+      const health = await fetchWithTimeout(`${COMPILER_BASE}/api/health`, {}, 12_000, signal);
       if (health.ok && isJsonResponse(health)) {
         const res = await postCompile();
         if (isJsonResponse(res)) return res;
       }
     } catch {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       // Container still booting; retry until timeout
     }
   }
@@ -322,6 +373,9 @@ export const App: React.FC = () => {
   const [copiedPart, setCopiedPart] = useState<CopiedPartData | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
+  const runSessionIdRef = useRef(0);
+  const compileTokenRef = useRef(0);
+  const compileAbortRef = useRef<AbortController | null>(null);
   const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -365,9 +419,9 @@ export const App: React.FC = () => {
 
     const wakeCompiler = async () => {
       try {
-        const res = await fetch(`${COMPILER_BASE}/api/health`, { signal: controller.signal });
+        const res = await fetchWithTimeout(`${COMPILER_BASE}/api/health`, {}, 12_000, controller.signal);
         if (cancelled) return;
-        if (res.ok && isJsonResponse(res)) {
+        if ((res.ok || res.status === 503) && isJsonResponse(res)) {
           clearShowTimer();
           setCompilerWaking(false);
           return;
@@ -393,9 +447,9 @@ export const App: React.FC = () => {
           return;
         }
         try {
-          const res = await fetch(`${COMPILER_BASE}/api/health`, { signal: controller.signal });
+          const res = await fetchWithTimeout(`${COMPILER_BASE}/api/health`, {}, 12_000, controller.signal);
           if (cancelled) return;
-          if (res.ok && isJsonResponse(res)) {
+          if ((res.ok || res.status === 503) && isJsonResponse(res)) {
             setCompilerWaking(false);
             return;
           }
@@ -541,6 +595,7 @@ export const App: React.FC = () => {
     });
     worker.onmessage = (e: MessageEvent<WorkerOutMessage>) => {
       const msg = e.data;
+      if (msg.sessionId !== runSessionIdRef.current) return;
       if (msg.type === 'snapshot') {
         setSnapshot(msg.snapshot);
       } else if (msg.type === 'serial') {
@@ -550,8 +605,15 @@ export const App: React.FC = () => {
         }));
       } else if (msg.type === 'error') {
         setRunning(false);
+        setSnapshot(null);
         setStatusText(msg.message);
       }
+    };
+    worker.onerror = (err) => {
+      runSessionIdRef.current++;
+      setRunning(false);
+      setSnapshot(null);
+      setStatusText(err.message || 'Simulation worker crashed');
     };
     workerRef.current = worker;
     return () => {
@@ -608,12 +670,21 @@ export const App: React.FC = () => {
     setDiagram((d) => ({ ...d, board: next.board, parts: next.parts, wires: next.wires }));
   };
 
+  const cancelPendingCompile = useCallback(() => {
+    compileTokenRef.current++;
+    compileAbortRef.current?.abort();
+    compileAbortRef.current = null;
+    setCompiling(false);
+  }, []);
+
   const handleStop = useCallback(() => {
+    cancelPendingCompile();
+    runSessionIdRef.current++;
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerInMessage);
     setRunning(false);
     setSnapshot(null);
     setStatusText('');
-  }, []);
+  }, [cancelPendingCompile]);
 
   const mcuParts = diagram.parts.filter((p) => isMcuBoardType(p.type));
   const primaryMcu = mcuParts[0] ?? null;
@@ -729,12 +800,14 @@ export const App: React.FC = () => {
 
   const startWithMcus = useCallback(
     (mcus: MultiMcuBoardSpec[], statusLabel: string) => {
+      const sessionId = ++runSessionIdRef.current;
       setCompileError(null);
       setSerialOutputs({});
       setRunning(true);
       setStatusText(statusLabel);
       workerRef.current?.postMessage({
         type: 'start',
+        sessionId,
         mcus,
         parts: diagram.parts,
         wires: diagram.wires,
@@ -750,6 +823,12 @@ export const App: React.FC = () => {
       handleStop();
       return;
     }
+    if (compiling) return;
+
+    const myToken = ++compileTokenRef.current;
+    compileAbortRef.current?.abort();
+    const abortCtrl = new AbortController();
+    compileAbortRef.current = abortCtrl;
 
     const targets = mcuParts.length > 0 ? mcuParts : [createDefaultBoardPart(diagram.board)];
     setCompiling(true);
@@ -762,6 +841,7 @@ export const App: React.FC = () => {
       let allCached = true;
 
       for (let i = 0; i < targets.length; i++) {
+        if (compileTokenRef.current !== myToken) return;
         const mcu = targets[i];
         const board = isMcuBoardType(mcu.type) ? mcu.type : diagram.board;
         const rawSketch = getMcuSketch(mcu);
@@ -784,17 +864,25 @@ export const App: React.FC = () => {
         }
 
         const cachedHex = await getCachedHex(board, sketch);
+        if (compileTokenRef.current !== myToken) return;
         if (cachedHex) {
           compiled.push({ partId: mcu.id, board, hex: cachedHex });
           continue;
         }
 
-        const res = await compileWithWakeRetry(board, sketch, (sec) =>
-          setStatusText(t.statusWaking(sec))
+        const res = await compileWithWakeRetry(
+          board,
+          sketch,
+          (sec) => {
+            if (compileTokenRef.current === myToken) setStatusText(t.statusWaking(sec));
+          },
+          abortCtrl.signal
         );
+        if (compileTokenRef.current !== myToken) return;
         setCompilerWaking(false);
 
         const data = await res.json();
+        if (compileTokenRef.current !== myToken) return;
         if (!res.ok) {
           setActiveMcuId(mcu.id);
           setCompileError({
@@ -810,21 +898,29 @@ export const App: React.FC = () => {
         }
 
         await saveCachedHex(board, sketch, data.hex);
+        if (compileTokenRef.current !== myToken) return;
         compiled.push({ partId: mcu.id, board, hex: data.hex });
         totalMs += data.durationMs ?? 0;
         if (!data.cached) allCached = false;
       }
 
+      if (compileTokenRef.current !== myToken) return;
       const label = allCached ? t.statusOfflineCached : t.statusCompiled(totalMs, false);
       startWithMcus(compiled, label);
-    } catch {
+    } catch (err) {
+      if (compileTokenRef.current !== myToken || (err instanceof DOMException && err.name === 'AbortError')) {
+        return;
+      }
       setCompileError({
         message: t.offlineNoCacheError,
         logs: '',
       });
       setStatusText(t.statusCompileError);
     } finally {
-      setCompiling(false);
+      if (compileTokenRef.current === myToken) {
+        compileAbortRef.current = null;
+        setCompiling(false);
+      }
     }
   };
 

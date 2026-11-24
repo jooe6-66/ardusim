@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ardusim-shell-v4';
+const CACHE_NAME = 'ardusim-shell-v5';
 const SHELL_ASSETS = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -20,6 +20,7 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
 
   // Network-first for HTML documents so deploys appear immediately on refresh (fallback to cache offline)
@@ -27,13 +28,18 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          if (response.ok && url.origin === self.location.origin) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          if (response.ok) {
+            const copyForReq = response.clone();
+            const copyForShell = response.clone();
+            event.waitUntil(
+              caches.open(CACHE_NAME).then((cache) =>
+                Promise.all([cache.put(request, copyForReq), cache.put('/index.html', copyForShell)])
+              )
+            );
           }
           return response;
         })
-        .catch(() => caches.match(request).then((c) => c || caches.match('/index.html')))
+        .catch(() => caches.match(request).then((c) => c || caches.match('/index.html') || Response.error()))
     );
     return;
   }
@@ -42,15 +48,20 @@ self.addEventListener('fetch', (event) => {
     caches.match(request).then((cached) => {
       const networkFetch = fetch(request)
         .then((response) => {
-          if (response.ok && url.origin === self.location.origin) {
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (response.ok && !contentType.includes('text/html')) {
             const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
           }
           return response;
         })
-        .catch(() => cached);
+        .catch(() => cached || Response.error());
 
-      return cached || networkFetch;
+      if (cached) {
+        event.waitUntil(networkFetch);
+        return cached;
+      }
+      return networkFetch;
     })
   );
 });

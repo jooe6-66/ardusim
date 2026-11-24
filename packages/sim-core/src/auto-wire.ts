@@ -181,6 +181,39 @@ export function autoWireFromSketch(
     return single ? [single] : [];
   };
 
+  /** Maps integer `0..15` in `analogRead(0)` to `A0..A15` (and `14..19` -> `A0..A5` on Uno/Nano). */
+  const resolveAnalogPins = (expr: string | undefined): string[] => {
+    if (!expr) return [];
+    let cur = expr.trim().replace(/^\((.*)\)$/, '$1').trim();
+    const origIdent = /^[A-Za-z_]\w*$/.test(cur) ? cur : null;
+    for (let d = 0; d < 6; d++) {
+      const next = symValues.get(cur);
+      if (!next) break;
+      cur = next;
+    }
+    if (/^\d+$/.test(cur)) {
+      const n = parseInt(cur, 10);
+      const mapped =
+        n >= 0 && n <= 15 && validMcuPins.has(`A${n}`)
+          ? `A${n}`
+          : !isMega && n >= 14 && n <= 19 && validMcuPins.has(`A${n - 14}`)
+            ? `A${n - 14}`
+            : null;
+      if (mapped) {
+        if (origIdent && !/^A\d+$/i.test(origIdent)) {
+          const prev = pinVarHints.get(mapped) ?? '';
+          if (!prev.includes(origIdent)) {
+            pinVarHints.set(mapped, prev ? `${prev} ${origIdent}` : origIdent);
+          }
+          if (!pinToSyms.has(mapped)) pinToSyms.set(mapped, new Set());
+          pinToSyms.get(mapped)!.add(origIdent);
+        }
+        return [mapped];
+      }
+    }
+    return resolvePins(expr);
+  };
+
   // Seed variable-name hints from all known pin symbols
   for (const [sym] of symValues) {
     resolvePin(sym);
@@ -199,9 +232,9 @@ export function autoWireFromSketch(
     re: new RegExp(`\\b(?:${Array.from(syms).join('|')})\\b`),
   }));
   const directCallRe =
-    /\b(?:analogRead|digitalRead|digitalWrite|analogWrite|pinMode|pulseIn(?:Long)?|tone|noTone|\.attach)\s*\(\s*([^,)]+)/g;
+    /\b(analogRead|digitalRead|digitalWrite|analogWrite|pinMode|pulseIn(?:Long)?|tone|noTone|\.attach)\s*\(\s*([^,)]+)/g;
   const assignReadRe =
-    /([A-Za-z_]\w*)\s*=\s*(?:analogRead|digitalRead|pulseIn(?:Long)?)\s*\(\s*([^,)]+)/g;
+    /([A-Za-z_]\w*)\s*=\s*(analogRead|digitalRead|pulseIn(?:Long)?)\s*\(\s*([^,)]+)/g;
 
   for (const line of rawLines) {
     const matchedPins = new Set<string>();
@@ -211,11 +244,13 @@ export function autoWireFromSketch(
       }
     }
     for (const cm of line.matchAll(directCallRe)) {
-      for (const p of resolvePins(cm[1])) matchedPins.add(p);
+      const pins = cm[1] === 'analogRead' ? resolveAnalogPins(cm[2]) : resolvePins(cm[2]);
+      for (const p of pins) matchedPins.add(p);
     }
     for (const p of matchedPins) appendLocalCtx(p, line);
     for (const am of line.matchAll(assignReadRe)) {
-      for (const p of resolvePins(am[2])) {
+      const pins = am[2] === 'analogRead' ? resolveAnalogPins(am[3]) : resolvePins(am[3]);
+      for (const p of pins) {
         if (!pinReadVars.has(p)) pinReadVars.set(p, new Set());
         pinReadVars.get(p)!.add(am[1]);
       }
@@ -500,7 +535,8 @@ export function autoWireFromSketch(
       claimedMcuPins.add(i2cScl);
       skippedWiredPins += 2;
     } else {
-      const part = ensurePart('mpu6050');
+      const mpuAddr = /\b0x69\b/.test(code) ? 0x69 : 0x68;
+      const part = ensurePart('mpu6050', mpuAddr === 0x69 ? { i2cAddress: 0x69 } : undefined);
       if (part) {
         linkPower(part.id);
         linkMcu(i2cSda, part.id, 'SDA');
@@ -583,9 +619,10 @@ export function autoWireFromSketch(
   }
   for (const m of code.matchAll(/\bMD_(?:MAX72XX|Parola)\s+\w+\s*(?:=\s*MD_(?:MAX72XX|Parola)\s*)?\(([^)]*)\)/g)) {
     const args = splitTopLevelArgs(m[1]);
-    const cs = resolvePin(args[1]) ?? (isMega ? '53' : '10');
-    const din = spiMosi;
-    const clk = spiSck;
+    const isSwSpi = args.length >= 5;
+    const din = isSwSpi ? (resolvePin(args[1]) ?? spiMosi) : spiMosi;
+    const clk = isSwSpi ? (resolvePin(args[2]) ?? spiSck) : spiSck;
+    const cs = (isSwSpi ? resolvePin(args[3]) : resolvePin(args[1])) ?? (isMega ? '53' : '10');
     if (isPinOccupied(din) || isPinOccupied(clk) || isPinOccupied(cs)) {
       claimedMcuPins.add(din);
       claimedMcuPins.add(clk);
@@ -652,28 +689,33 @@ export function autoWireFromSketch(
   const servo360LocalRe = /360|continuous|kontinu|wheel|roda|drive/i;
   const servo360GlobalRe = /360|continuous|kontinu|\bwheel\w*|\broda\w*/i;
   const servo180Re = /\bsg90\b|\b180\b|mg996|mg995|sudut|angle|palang|pintu|\bgate\b/i;
+  const servoEntries: Array<{ varName: string; pin: string; localHint: string }> = [];
   for (const varName of servoVars) {
     const attachRe = new RegExp(`\\b${varName}(?:\\s*\\[[^\\]]*\\])?\\.attach\\s*\\(([^)]*)\\)`, 'g');
     for (const m of code.matchAll(attachRe)) {
       for (const pin of resolvePins(splitTopLevelArgs(m[1])[0])) {
-        if (isPinOccupied(pin)) {
-          claimedMcuPins.add(pin);
-          skippedWiredPins += 1;
-          continue;
-        }
         const localHint = `${varName} ${pinVarHints.get(pin) ?? ''} ${pinLocalContext.get(pin) ?? ''}`;
-        let servoType: 'servo' | 'servo-360' = 'servo';
-        if (servo180Re.test(localHint) && !/360|continuous|kontinu/i.test(localHint)) {
-          servoType = 'servo';
-        } else if (servo360LocalRe.test(localHint) || servo360GlobalRe.test(rawSketch)) {
-          servoType = 'servo-360';
-        }
-        const part = ensurePart(servoType);
-        if (part) {
-          linkPower(part.id);
-          linkMcu(pin, part.id, 'SIG');
-        }
+        servoEntries.push({ varName, pin, localHint });
       }
+    }
+  }
+  const hasExplicit360Servo = servoEntries.some((e) => servo360LocalRe.test(e.localHint));
+  for (const { pin, localHint } of servoEntries) {
+    if (isPinOccupied(pin)) {
+      claimedMcuPins.add(pin);
+      skippedWiredPins += 1;
+      continue;
+    }
+    let servoType: 'servo' | 'servo-360' = 'servo';
+    if (servo180Re.test(localHint) && !/360|continuous|kontinu/i.test(localHint)) {
+      servoType = 'servo';
+    } else if (servo360LocalRe.test(localHint) || (!hasExplicit360Servo && servo360GlobalRe.test(rawSketch))) {
+      servoType = 'servo-360';
+    }
+    const part = ensurePart(servoType);
+    if (part) {
+      linkPower(part.id);
+      linkMcu(pin, part.id, 'SIG');
     }
   }
 
@@ -791,7 +833,7 @@ export function autoWireFromSketch(
 
   // 3l. UART -> GPS NEO-6M or Bluetooth HC-05
   const gpsCtxRe = /gps|neo[\s_-]*6m|nmea|tinygps|gpgga|gprmc|satelit|latitude|longitude/i;
-  const btCtxRe = /bluetooth|hc[\s_-]*05|hc05|\bbt\b/i;
+  const btCtxRe = /bluetooth|hc[\s_-]*05|hc05|\bbt(?:$|[^a-z]|serial)/i;
   for (const m of code.matchAll(
     /\b(?:SoftwareSerial|AltSoftSerial|NeoSWSerial)\s+([A-Za-z_]\w*)\s*(?:=\s*(?:SoftwareSerial|AltSoftSerial|NeoSWSerial)\s*)?\(([^)]*)\)/g
   )) {
@@ -806,7 +848,17 @@ export function autoWireFromSketch(
         skippedWiredPins += 1;
         continue;
       }
-      const isGps = gpsCtxRe.test(`${varName} ${rawSketch}`);
+      let isGps: boolean;
+      if (btCtxRe.test(varName) && !gpsCtxRe.test(varName)) {
+        isGps = false;
+      } else if (gpsCtxRe.test(varName) && !btCtxRe.test(varName)) {
+        isGps = true;
+      } else {
+        const varLines = rawLines.filter((l) => new RegExp(`\\b${varName}\\b`).test(l)).join('\n');
+        if (btCtxRe.test(varLines) && !gpsCtxRe.test(varLines)) isGps = false;
+        else if (gpsCtxRe.test(varLines) && !btCtxRe.test(varLines)) isGps = true;
+        else isGps = gpsCtxRe.test(`${varName} ${rawSketch}`);
+      }
       const part = ensurePart(isGps ? 'gps-neo6m' : 'hc-05');
       if (part) {
         linkPower(part.id);
@@ -901,6 +953,7 @@ export function autoWireFromSketch(
   }
 
   // 3n. Buzzer via tone() / noTone()
+  let hasToneBuzzer = false;
   for (const m of code.matchAll(/\b(?:noTone|tone)\s*\(\s*([^,)]+)/g)) {
     for (const pin of resolvePins(m[1])) {
       if (isPinOccupied(pin)) {
@@ -910,6 +963,7 @@ export function autoWireFromSketch(
       }
       const part = ensurePart('buzzer');
       if (part) {
+        hasToneBuzzer = true;
         linkMcu(pin, part.id, '+');
         requestRail(part.id, '-', 'gnd');
       }
@@ -919,6 +973,7 @@ export function autoWireFromSketch(
   // 4. Collect remaining pinMode / digital / analog usages
   const outputPins = new Set<string>();
   const inputPins = new Set<string>();
+  const pullupInputPins = new Set<string>();
   const analogPins = new Set<string>();
 
   for (const m of code.matchAll(/\bpinMode\s*\(\s*([^,)]+)\s*,\s*(OUTPUT|INPUT_PULLUP|INPUT)\s*\)/g)) {
@@ -930,7 +985,10 @@ export function autoWireFromSketch(
         continue;
       }
       if (m[2] === 'OUTPUT') outputPins.add(p);
-      else inputPins.add(p);
+      else {
+        inputPins.add(p);
+        if (m[2] === 'INPUT_PULLUP') pullupInputPins.add(p);
+      }
     }
   }
   for (const m of code.matchAll(/\b(?:digitalWrite|analogWrite)\s*\(\s*([^,)]+)/g)) {
@@ -956,7 +1014,7 @@ export function autoWireFromSketch(
     }
   }
   for (const m of code.matchAll(/\banalogRead\s*\(\s*([^)]+)\)/g)) {
-    for (const p of resolvePins(m[1])) {
+    for (const p of resolveAnalogPins(m[1])) {
       if (claimedMcuPins.has(p)) continue;
       if (existingWiredMcuPins.has(p)) {
         claimedMcuPins.add(p);
@@ -1200,10 +1258,26 @@ export function autoWireFromSketch(
   }
 
   // Shared context classification helpers for 4d / 4e / 4f
-  let sharedMq2: PartInstance | null = null;
-  let sharedIr: PartInstance | null = null;
-  let sharedSoil: PartInstance | null = null;
-  let sharedRain: PartInstance | null = null;
+  type DualSensorType = 'mq2' | 'ir-obstacle' | 'soil-moisture' | 'rain-sensor';
+  const sensorPools = new Map<DualSensorType, Array<{ part: PartInstance; aoBound: boolean; doBound: boolean }>>();
+  const acquireSharedSensor = (type: DualSensorType, channel: 'ao' | 'do'): PartInstance | null => {
+    let pool = sensorPools.get(type);
+    if (!pool) {
+      pool = [];
+      sensorPools.set(type, pool);
+    }
+    const free = pool.find((entry) => (channel === 'ao' ? !entry.aoBound : !entry.doBound));
+    if (free) {
+      if (channel === 'ao') free.aoBound = true;
+      else free.doBound = true;
+      return free.part;
+    }
+    const part = ensurePart(type);
+    if (!part) return null;
+    linkPower(part.id);
+    pool.push({ part, aoBound: channel === 'ao', doBound: channel === 'do' });
+    return part;
+  };
 
   const potExplicitRe = /(?:^|[^a-z])pot(?:en\w*)?(?:[^a-z]|$)|knob|dial|trim|setpoint|dimmer/i;
   const btnExplicitRe = /(?:^|[^a-z])(?:btn|sw)(?:[^a-z]|$)|button|tombol|saklar|switch|push/i;
@@ -1281,6 +1355,7 @@ export function autoWireFromSketch(
   };
 
   // 4d. Analog sensors (7 analog sensors -> Potentiometer fallback)
+  const matchedAnalogKinds = new Set<string>();
   for (const p of analogPins) {
     if (claimedMcuPins.has(p)) continue;
     const directHint = pinVarHints.get(p) ?? '';
@@ -1290,49 +1365,28 @@ export function autoWireFromSketch(
     if (potExplicitRe.test(directHint) || potExplicitRe.test(localCtx)) {
       kind = 'potentiometer';
     } else {
-      kind =
-        classifyAnalog(directHint, false) ??
-        classifyAnalog(localCtx, false) ??
-        classifyAnalog(rawSketch, true) ??
-        'potentiometer';
+      const localKind = classifyAnalog(directHint, false) ?? classifyAnalog(localCtx, false);
+      if (localKind) {
+        matchedAnalogKinds.add(localKind);
+        kind = localKind;
+      } else {
+        const globalKind = classifyAnalog(rawSketch, true);
+        kind = globalKind && !matchedAnalogKinds.has(globalKind) ? globalKind : 'potentiometer';
+      }
     }
 
     if (kind === 'mq2') {
-      const part: PartInstance | null = sharedMq2 ?? ensurePart('mq2');
-      if (part) {
-        if (!sharedMq2) {
-          sharedMq2 = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'AOUT');
-      }
+      const part = acquireSharedSensor('mq2', 'ao');
+      if (part) linkMcu(p, part.id, 'AOUT');
     } else if (kind === 'ir-obstacle') {
-      const part: PartInstance | null = sharedIr ?? ensurePart('ir-obstacle');
-      if (part) {
-        if (!sharedIr) {
-          sharedIr = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'AO');
-      }
+      const part = acquireSharedSensor('ir-obstacle', 'ao');
+      if (part) linkMcu(p, part.id, 'AO');
     } else if (kind === 'soil-moisture') {
-      const part: PartInstance | null = sharedSoil ?? ensurePart('soil-moisture');
-      if (part) {
-        if (!sharedSoil) {
-          sharedSoil = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'AO');
-      }
+      const part = acquireSharedSensor('soil-moisture', 'ao');
+      if (part) linkMcu(p, part.id, 'AO');
     } else if (kind === 'rain-sensor') {
-      const part: PartInstance | null = sharedRain ?? ensurePart('rain-sensor');
-      if (part) {
-        if (!sharedRain) {
-          sharedRain = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'AO');
-      }
+      const part = acquireSharedSensor('rain-sensor', 'ao');
+      if (part) linkMcu(p, part.id, 'AO');
     } else if (kind === 'water-level') {
       const part = ensurePart('water-level');
       if (part) {
@@ -1364,6 +1418,7 @@ export function autoWireFromSketch(
   }
 
   // 4e. Digital inputs (PIR, MQ-2 DOUT, IR Obstacle OUT, Soil DO, Rain DO, Pushbutton)
+  const matchedDigitalInKinds = new Set<string>();
   for (const p of inputPins) {
     if (claimedMcuPins.has(p)) continue;
     const directHint = pinVarHints.get(p) ?? '';
@@ -1373,11 +1428,16 @@ export function autoWireFromSketch(
     if (btnExplicitRe.test(directHint) || btnExplicitRe.test(localCtx)) {
       kind = 'pushbutton';
     } else {
-      kind =
-        classifyDigitalInput(directHint, false) ??
-        classifyDigitalInput(localCtx, false) ??
-        classifyDigitalInput(rawSketch, true) ??
-        'pushbutton';
+      const localKind = classifyDigitalInput(directHint, false) ?? classifyDigitalInput(localCtx, false);
+      if (localKind) {
+        matchedDigitalInKinds.add(localKind);
+        kind = localKind;
+      } else if (pullupInputPins.has(p)) {
+        kind = 'pushbutton';
+      } else {
+        const globalKind = classifyDigitalInput(rawSketch, true);
+        kind = globalKind && !matchedDigitalInKinds.has(globalKind) ? globalKind : 'pushbutton';
+      }
     }
 
     if (kind === 'pir') {
@@ -1387,41 +1447,17 @@ export function autoWireFromSketch(
         linkMcu(p, part.id, 'OUT');
       }
     } else if (kind === 'mq2') {
-      const part: PartInstance | null = sharedMq2 ?? ensurePart('mq2');
-      if (part) {
-        if (!sharedMq2) {
-          sharedMq2 = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'DOUT');
-      }
+      const part = acquireSharedSensor('mq2', 'do');
+      if (part) linkMcu(p, part.id, 'DOUT');
     } else if (kind === 'ir-obstacle') {
-      const part: PartInstance | null = sharedIr ?? ensurePart('ir-obstacle');
-      if (part) {
-        if (!sharedIr) {
-          sharedIr = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'OUT');
-      }
+      const part = acquireSharedSensor('ir-obstacle', 'do');
+      if (part) linkMcu(p, part.id, 'OUT');
     } else if (kind === 'soil-moisture') {
-      const part: PartInstance | null = sharedSoil ?? ensurePart('soil-moisture');
-      if (part) {
-        if (!sharedSoil) {
-          sharedSoil = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'DO');
-      }
+      const part = acquireSharedSensor('soil-moisture', 'do');
+      if (part) linkMcu(p, part.id, 'DO');
     } else if (kind === 'rain-sensor') {
-      const part: PartInstance | null = sharedRain ?? ensurePart('rain-sensor');
-      if (part) {
-        if (!sharedRain) {
-          sharedRain = part;
-          linkPower(part.id);
-        }
-        linkMcu(p, part.id, 'DO');
-      }
+      const part = acquireSharedSensor('rain-sensor', 'do');
+      if (part) linkMcu(p, part.id, 'DO');
     } else {
       const btn = ensurePart('pushbutton');
       if (btn) {
@@ -1434,6 +1470,7 @@ export function autoWireFromSketch(
   }
 
   // 4f. Digital / PWM outputs (Relay, Buzzer, DC Motor, or LED + 220 Ohm Resistor)
+  const matchedDigitalOutKinds = new Set<string>(hasToneBuzzer ? ['buzzer'] : []);
   for (const p of outputPins) {
     if (claimedMcuPins.has(p)) continue;
     const directHint = pinVarHints.get(p) ?? '';
@@ -1443,11 +1480,14 @@ export function autoWireFromSketch(
     if ((ledExplicitRe.test(directHint) || ledExplicitRe.test(localCtx)) && !/\brgb\b|relay|relai/i.test(`${directHint} ${localCtx}`)) {
       kind = 'led';
     } else {
-      kind =
-        classifyDigitalOutput(directHint, false) ??
-        classifyDigitalOutput(localCtx, false) ??
-        classifyDigitalOutput(rawSketch, true) ??
-        'led';
+      const localKind = classifyDigitalOutput(directHint, false) ?? classifyDigitalOutput(localCtx, false);
+      if (localKind) {
+        matchedDigitalOutKinds.add(localKind);
+        kind = localKind;
+      } else {
+        const globalKind = classifyDigitalOutput(rawSketch, true);
+        kind = globalKind && !matchedDigitalOutKinds.has(globalKind) ? globalKind : 'led';
+      }
     }
 
     if (kind === 'relay') {
@@ -1708,8 +1748,22 @@ export function autoWireFromSketch(
     return `aw${Math.random().toString(36).slice(2, 7)}`;
   };
 
+  const existingPairSet = new Set<string>();
+  for (const w of preservedWires) {
+    const a = pinKey(w.from);
+    const b = pinKey(w.to);
+    existingPairSet.add(`${a}|${b}`);
+    existingPairSet.add(`${b}|${a}`);
+  }
+
   let wires: Wire[] = [...preservedWires];
+  let addedWires = 0;
   for (const item of pendingLinks) {
+    const a = pinKey(item.from);
+    const b = pinKey(item.to);
+    if (existingPairSet.has(`${a}|${b}`)) continue;
+    existingPairSet.add(`${a}|${b}`);
+    existingPairSet.add(`${b}|${a}`);
     const { color, unifyWireIds } = pickWireColor(parts, wires, item.from, item.to, manifests);
     if (unifyWireIds.length > 0) {
       const uSet = new Set(unifyWireIds);
@@ -1721,6 +1775,7 @@ export function autoWireFromSketch(
       to: item.to,
       color,
     });
+    addedWires++;
   }
 
   const tidied = autoTidyCircuit(parts, wires, manifests);
@@ -1728,7 +1783,7 @@ export function autoWireFromSketch(
     parts: tidied.parts,
     wires: tidied.wires,
     addedParts,
-    addedWires: pendingLinks.length,
+    addedWires,
     skippedWiredPins,
   };
 }

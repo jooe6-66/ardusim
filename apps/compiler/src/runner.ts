@@ -45,6 +45,12 @@ export interface CompilerServiceOptions {
 const MAX_SKETCH_BYTES = 64 * 1024;
 const DEFAULT_COMPILE_TIMEOUT_MS = 30_000;
 const MAX_CACHE_ENTRIES = 120;
+const MAX_ERROR_LOGS_CHARS = 32_768;
+
+function truncateLogs(logs: string, maxChars = MAX_ERROR_LOGS_CHARS): string {
+  if (logs.length <= maxChars) return logs;
+  return `${logs.slice(0, maxChars)}\n... [truncated]`;
+}
 
 export function parseTimeoutEnv(raw: string | undefined, fallback = DEFAULT_COMPILE_TIMEOUT_MS): number {
   if (raw === undefined || raw.trim() === '') return fallback;
@@ -52,7 +58,13 @@ export function parseTimeoutEnv(raw: string | undefined, fallback = DEFAULT_COMP
   return Number.isInteger(n) && n >= 1000 ? n : fallback;
 }
 
-/** Blocks path traversal or absolute filesystem includes such as `#include "/etc/passwd"`. */
+function stripCCommentsPreservingLines(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '))
+    .replace(/\/\/[^\r\n]*/g, '');
+}
+
+/** Blocks path traversal, macro includes, or absolute filesystem includes such as `#include "/etc/passwd"`. */
 export function validateSketchSafety(sketch: string): void {
   if (typeof sketch !== 'string' || sketch.trim().length === 0) {
     throw new CompileError('Sketch is empty', 'Sketch cannot be empty', 400);
@@ -64,13 +76,42 @@ export function validateSketchSafety(sketch: string): void {
       413
     );
   }
-  const dangerousInclude = /#\s*include\s*[<"]\s*(?:\/|\.\.)/;
-  if (dangerousInclude.test(sketch)) {
+
+  const normalized = stripCCommentsPreservingLines(sketch.replace(/\\\r?\n/g, ''));
+
+  if (/^\s*#\s*(?:include_next|import)\b/m.test(normalized)) {
     throw new CompileError(
-      'Disallowed #include path (absolute or parent-relative paths are blocked)',
-      'Security policy blocked #include path',
+      'Disallowed #include_next or #import directive',
+      'Security policy blocked #include directive',
       400
     );
+  }
+
+  const includeDirective = /^\s*#\s*include\b([^\r\n]*)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = includeDirective.exec(normalized)) !== null) {
+    const tail = match[1].trim();
+    const literal = /^(?:<([^>\r\n]+)>|"([^"\r\n]+)")$/.exec(tail);
+    if (!literal) {
+      throw new CompileError(
+        'Disallowed #include syntax (only literal <header> or "header" is allowed)',
+        'Security policy blocked #include directive',
+        400
+      );
+    }
+    const path = (literal[1] ?? literal[2] ?? '').trim();
+    if (
+      !path ||
+      path.includes('\0') ||
+      /(?:^|[\\/])\.\.(?:$|[\\/])/.test(path) ||
+      /^(?:[\\/~]|[A-Za-z]:)/.test(path)
+    ) {
+      throw new CompileError(
+        'Disallowed #include path (absolute or parent-relative paths are blocked)',
+        'Security policy blocked #include path',
+        400
+      );
+    }
   }
 }
 
@@ -117,10 +158,14 @@ export class CompilerService {
     if (!this.cliAvailable) {
       this.cliAvailable = execFileAsync(this.arduinoCliBin, ['version'], { timeout: 3000 })
         .then(() => true)
-        .catch(() => false);
+        .catch(() => {
+          this.cliAvailable = null;
+          return false;
+        });
     }
 
     if (!(await this.cliAvailable)) {
+      this.cliAvailable = null;
       throw new CompileError(
         'arduino-cli not found (install arduino-cli and arduino:avr core)',
         'Compiler toolchain missing',
@@ -130,22 +175,30 @@ export class CompilerService {
     return 'arduino-cli';
   }
 
+  getCached(board: BoardId, sketch: string): CompileResult | null {
+    const hash = createHash('sha256').update(`${board}\0${sketch}`).digest('hex');
+    const cached = this.cache.get(hash);
+    if (!cached) return null;
+    // Refresh LRU order on cache hit
+    this.cache.delete(hash);
+    this.cache.set(hash, cached);
+    return {
+      hex: cached.hex,
+      cached: true,
+      engine: 'arduino-cli',
+      durationMs: 0,
+      logs: cached.logs,
+    };
+  }
+
   async compile(board: BoardId, sketch: string): Promise<CompileResult> {
     validateSketchSafety(sketch);
 
     const spec = BOARD_SPECS[board];
-    const hash = createHash('sha256').update(`${board}\0${sketch}`).digest('hex');
-    const cached = this.cache.get(hash);
-    if (cached) {
-      return {
-        hex: cached.hex,
-        cached: true,
-        engine: 'arduino-cli',
-        durationMs: 0,
-        logs: cached.logs,
-      };
-    }
+    const cachedResult = this.getCached(board, sketch);
+    if (cachedResult) return cachedResult;
 
+    const hash = createHash('sha256').update(`${board}\0${sketch}`).digest('hex');
     const engine = await this.resolveEngine();
     const start = Date.now();
     const compiled = await this.compileWithArduinoCli(spec.fqbn, sketch);
@@ -196,7 +249,7 @@ export class CompilerService {
         }
       );
       const hex = await readFile(join(buildDir, 'sketch.ino.hex'), 'utf8');
-      return { hex, logs: `${stdout}\n${stderr}`.trim() };
+      return { hex, logs: truncateLogs(`${stdout}\n${stderr}`.trim()) };
     } catch (err: unknown) {
       const e = err as {
         stdout?: string;
@@ -206,13 +259,16 @@ export class CompilerService {
         signal?: string;
         code?: string | number;
       };
-      const logs = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim();
+      const logs = truncateLogs([e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim());
+      if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+        throw new CompileError('Compilation output exceeded limit', logs, 400);
+      }
       if (e.killed === true || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
         throw new CompileError('Compilation timed out. Please retry.', logs, 504);
       }
       throw new CompileError('Compilation failed', logs, 400);
     } finally {
-      await Promise.all([
+      await Promise.allSettled([
         rm(workDir, { recursive: true, force: true }),
         rm(sketchCacheDir, { recursive: true, force: true }),
       ]);
