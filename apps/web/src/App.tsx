@@ -87,6 +87,23 @@ function isLocalCompilerUrl(url: string): boolean {
   }
 }
 
+function triggerCompilerWake(baseUrl: string): void {
+  try {
+    const { hostname } = new URL(baseUrl);
+    const m = hostname.match(/^([^.]+)\.containers\.(snapdeploy\.(?:app|dev))$/);
+    if (m) {
+      fetch(`https://snapdeploy.dev/api/public/wake/${encodeURIComponent(m[1])}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }).catch(() => {});
+      return;
+    }
+  } catch {
+    // fallback below
+  }
+  fetch(`${baseUrl}/api/health`, { mode: 'no-cors' }).catch(() => {});
+}
+
 function tidyUnroutedWires(parts: PartInstance[], wires: Wire[]): Wire[] {
   if (wires.length === 0 || wires.every((w) => Array.isArray(w.waypoints) && w.waypoints.length > 0)) {
     return wires;
@@ -200,9 +217,9 @@ async function compileWithWakeRetry(
   }
 
   const startedAt = Date.now();
-  const maxWaitMs = 95_000;
-  // Trigger wake-up with a simple no-cors GET in case the sleep proxy page omits CORS headers
-  fetch(`${COMPILER_BASE}/api/health`, { mode: 'no-cors' }).catch(() => {});
+  const maxWaitMs = 130_000;
+  // Trigger wake-up via SnapDeploy public wake API when applicable, else no-cors GET
+  triggerCompilerWake(COMPILER_BASE);
 
   while (Date.now() - startedAt < maxWaitMs) {
     onWaking(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
@@ -367,9 +384,9 @@ export const App: React.FC = () => {
 
       clearShowTimer();
       setCompilerWaking(true);
-      fetch(`${COMPILER_BASE}/api/health`, { mode: 'no-cors' }).catch(() => {});
+      triggerCompilerWake(COMPILER_BASE);
 
-      const deadline = Date.now() + 95_000;
+      const deadline = Date.now() + 130_000;
       const poll = async () => {
         if (cancelled || Date.now() >= deadline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
           if (!cancelled) setCompilerWaking(false);
