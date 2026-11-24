@@ -1391,3 +1391,421 @@ test('autoWireFromSketch wires IR obstacle, soil moisture, water level, rain sen
   assert.equal(res.parts.filter((p) => p.type === 'servo-360').length, 1);
   assert.equal(res.parts.filter((p) => p.type === 'pir').length, 1);
 });
+
+function buildCatalogTestManifests(): Map<string, PartManifest> {
+  const m = new Map(testManifests);
+  const unoPins: PartManifest['pins'] = [
+    { id: 'VIN', label: 'VIN', x: 88, y: 182, type: 'power', exitDir: 'down' },
+    { id: '5V', label: '5V', x: 134, y: 182, type: 'power', exitDir: 'down', fixedVoltage: 5.0 },
+    { id: '3.3V', label: '3.3V', x: 112, y: 182, type: 'power', exitDir: 'down', fixedVoltage: 3.3 },
+    { id: 'GND.1', label: 'GND', x: 86, y: 14, type: 'gnd', exitDir: 'up', fixedVoltage: 0 },
+    { id: 'GND.2', label: 'GND', x: 146, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+    { id: 'GND.3', label: 'GND', x: 158, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+  ];
+  for (let pin = 0; pin <= 13; pin++) {
+    unoPins.push({ id: String(pin), label: `D${pin}`, x: 250 - pin * 12, y: 14, type: 'digital', exitDir: 'up' });
+  }
+  for (let a = 0; a <= 5; a++) {
+    unoPins.push({
+      id: `A${a}`,
+      label: `A${a}`,
+      x: 200 + a * 12,
+      y: 182,
+      type: a >= 4 ? 'i2c' : 'analog',
+      exitDir: 'down',
+    });
+  }
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Arduino Uno', en: 'Arduino Uno' },
+    defaultProps: {},
+    pins: unoPins,
+  });
+
+  const add = (
+    type: string,
+    category: PartManifest['category'],
+    pinDefs: Array<[string, PartManifest['pins'][number]['type']]>,
+    defaultProps: Record<string, unknown> = {}
+  ) => {
+    m.set(type, {
+      type,
+      category,
+      width: 80,
+      height: 80,
+      name: { id: type, en: type },
+      defaultProps,
+      pins: pinDefs.map(([id, pType], idx) => ({
+        id,
+        label: id,
+        x: 10 + idx * 10,
+        y: 72,
+        type: pType,
+        exitDir: 'down' as const,
+      })),
+    });
+  };
+
+  add('potentiometer', 'input', [['GND', 'gnd'], ['SIG', 'analog'], ['VCC', 'power']], { value: 10, unit: 'kohm', position: 0.5 });
+  add('pushbutton', 'input', [['1a', 'passive'], ['2a', 'passive'], ['1b', 'passive'], ['2b', 'passive']]);
+  add('keypad-4x4', 'input', [
+    ['R1', 'digital'], ['R2', 'digital'], ['R3', 'digital'], ['R4', 'digital'],
+    ['C1', 'digital'], ['C2', 'digital'], ['C3', 'digital'], ['C4', 'digital'],
+  ]);
+  add('hc-sr04', 'sensor', [['VCC', 'power'], ['TRIG', 'digital'], ['ECHO', 'digital'], ['GND', 'gnd']]);
+  add('dht22', 'sensor', [['VCC', 'power'], ['DATA', 'digital'], ['GND', 'gnd']], { model: 'DHT22' });
+  add('pir', 'sensor', [['VCC', 'power'], ['OUT', 'digital'], ['GND', 'gnd']]);
+  add('ldr', 'sensor', [['1', 'passive'], ['2', 'passive']]);
+  add('lm35', 'sensor', [['VCC', 'power'], ['OUT', 'analog'], ['GND', 'gnd']]);
+  add('mq2', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['DOUT', 'digital'], ['AOUT', 'analog']]);
+  add('ir-obstacle', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['OUT', 'digital'], ['AO', 'analog']]);
+  add('soil-moisture', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['AO', 'analog'], ['DO', 'digital']]);
+  add('water-level', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['AO', 'analog']]);
+  add('rain-sensor', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['AO', 'analog'], ['DO', 'digital']]);
+  add('lcd-1602-i2c', 'display', [['GND', 'gnd'], ['VCC', 'power'], ['SDA', 'i2c'], ['SCL', 'i2c']], { i2cAddress: 0x27 });
+  add('oled-ssd1306', 'display', [['GND', 'gnd'], ['VCC', 'power'], ['SCL', 'i2c'], ['SDA', 'i2c']], { i2cAddress: 0x3c });
+  add('seven-seg', 'display', [
+    ['g', 'digital'], ['f', 'digital'], ['COM', 'power'], ['a', 'digital'],
+    ['b', 'digital'], ['e', 'digital'], ['d', 'digital'], ['c', 'digital'], ['dp', 'digital'],
+  ], { common: 'cathode' });
+  add('rgb-led', 'output', [['R', 'digital'], ['COM', 'gnd'], ['G', 'digital'], ['B', 'digital']], { common: 'cathode' });
+  add('buzzer', 'output', [['+', 'digital'], ['-', 'gnd']]);
+  add('relay', 'output', [['VCC', 'power'], ['GND', 'gnd'], ['IN', 'digital'], ['NO', 'passive'], ['COM', 'passive'], ['NC', 'passive']]);
+  add('servo', 'motor', [['GND', 'gnd'], ['VCC', 'power'], ['SIG', 'digital']]);
+  add('servo-360', 'motor', [['GND', 'gnd'], ['VCC', 'power'], ['SIG', 'digital']]);
+  add('dc-motor', 'motor', [['+', 'passive'], ['-', 'passive']]);
+  add('ds3231-rtc', 'sensor', [['GND', 'gnd'], ['VCC', 'power'], ['SDA', 'i2c'], ['SCL', 'i2c']]);
+  add('mpu6050', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['SCL', 'i2c'], ['SDA', 'i2c']]);
+  add('max7219', 'display', [['VCC', 'power'], ['GND', 'gnd'], ['DIN', 'digital'], ['CS', 'digital'], ['CLK', 'digital']]);
+  add('neopixel-strip', 'output', [['VCC', 'power'], ['DIN', 'digital'], ['GND', 'gnd']]);
+  add('rfid-rc522', 'sensor', [
+    ['SDA', 'digital'], ['SCK', 'digital'], ['MOSI', 'digital'], ['MISO', 'digital'],
+    ['GND', 'gnd'], ['RST', 'digital'], ['3.3V', 'power'],
+  ]);
+  add('stepper', 'motor', [['IN1', 'digital'], ['IN2', 'digital'], ['IN3', 'digital'], ['IN4', 'digital']], { stepsPerRev: 2048 });
+  add('gps-neo6m', 'sensor', [['VCC', 'power'], ['RX', 'digital'], ['TX', 'digital'], ['GND', 'gnd']]);
+  add('hc-05', 'sensor', [['VCC', 'power'], ['GND', 'gnd'], ['TXD', 'digital'], ['RXD', 'digital']]);
+  add('l298n', 'motor', [
+    ['OUT1', 'passive'], ['OUT2', 'passive'], ['OUT3', 'passive'], ['OUT4', 'passive'],
+    ['12V', 'power'], ['GND', 'gnd'], ['5V', 'power'],
+    ['ENA', 'digital'], ['IN1', 'digital'], ['IN2', 'digital'], ['IN3', 'digital'], ['IN4', 'digital'], ['ENB', 'digital'],
+  ]);
+  add('buck-lm2596', 'power', [['IN+', 'power'], ['IN-', 'gnd'], ['OUT+', 'power'], ['OUT-', 'gnd']], { targetVoltage: 5.0 });
+  add('boost-mt3608', 'power', [['IN+', 'power'], ['IN-', 'gnd'], ['OUT+', 'power'], ['OUT-', 'gnd']], { targetVoltage: 12.0 });
+  add('battery-18650', 'power', [['+', 'power'], ['-', 'gnd']], { cells: 1, voltage: 3.7 });
+  add('battery-lipo-3s', 'power', [['+', 'power'], ['-', 'gnd']], { voltage: 11.1 });
+  add('breadboard-half', 'breadboard', [['tp1', 'power'], ['tn1', 'gnd'], ['a1', 'passive'], ['e1', 'passive']]);
+  return m;
+}
+
+test('autoWireFromSketch detects all 7 analog sensors + potentiometer fallback with generic pin names', () => {
+  const m = buildCatalogTestManifests();
+  const uno: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+
+  const cases: Array<{ label: string; expectedType: string; expectedPin: string; extraParts?: string }> = [
+    { label: 'Water Level Tangki', expectedType: 'water-level', expectedPin: 'AO' },
+    { label: 'Kelembaban Tanah', expectedType: 'soil-moisture', expectedPin: 'AO' },
+    { label: 'Sensor Hujan', expectedType: 'rain-sensor', expectedPin: 'AO' },
+    { label: 'IR Obstacle Halangan', expectedType: 'ir-obstacle', expectedPin: 'AO' },
+    { label: 'Suhu LM35 (C)', expectedType: 'lm35', expectedPin: 'OUT' },
+    { label: 'Cahaya LDR Lux', expectedType: 'ldr', expectedPin: '2', extraParts: 'resistor' },
+    { label: 'Gas Asap MQ2', expectedType: 'mq2', expectedPin: 'AOUT' },
+    { label: 'Nilai Analog', expectedType: 'potentiometer', expectedPin: 'SIG' },
+  ];
+
+  for (const c of cases) {
+    const sketch = `
+      const int SENSOR_PIN = A0;
+      void setup() { Serial.begin(9600); }
+      void loop() {
+        int val = analogRead(SENSOR_PIN);
+        Serial.print("${c.label}: ");
+        Serial.println(val);
+      }
+    `;
+    const res = autoWireFromSketch(sketch, uno, [uno], [], m);
+    const part = res.parts.find((p) => p.type === c.expectedType);
+    assert.ok(part, `Expected ${c.expectedType} for "${c.label}"`);
+    assert.ok(
+      res.wires.some((w) => w.from.pinId === 'A0' && w.to.partId === part!.id && w.to.pinId === c.expectedPin),
+      `Expected A0 wired to ${c.expectedType}:${c.expectedPin}`
+    );
+    if (c.extraParts) {
+      assert.ok(res.parts.some((p) => p.type === c.extraParts), `Expected ${c.extraParts} for ${c.expectedType}`);
+    }
+  }
+
+  // Multi-sensor local context disambiguation + DHT22 anti-false-positive guard for POT_PIN
+  const multiSketch = `
+    #include <DHT.h>
+    DHT dht(2, DHT22);
+    const int SENSOR_1 = A0; // ketinggian air tangki
+    const int SENSOR_2 = A1; // sensor cahaya
+    const int POT_PIN = A2;
+    void setup() { Serial.begin(9600); }
+    void loop() {
+      // Kelembaban udara dan suhu dari DHT22
+      int a = analogRead(SENSOR_1);
+      int b = analogRead(SENSOR_2);
+      int c = analogRead(POT_PIN);
+    }
+  `;
+  const multiRes = autoWireFromSketch(multiSketch, uno, [uno], [], m);
+  assert.equal(multiRes.parts.filter((p) => p.type === 'water-level').length, 1);
+  assert.equal(multiRes.parts.filter((p) => p.type === 'ldr').length, 1);
+  assert.equal(multiRes.parts.filter((p) => p.type === 'potentiometer').length, 1);
+  assert.equal(multiRes.parts.filter((p) => p.type === 'lm35').length, 0);
+});
+
+test('autoWireFromSketch detects digital inputs, HC-SR04 pulseIn, shared AO+DO modules, and keypad with generic pins', () => {
+  const m = buildCatalogTestManifests();
+  const uno: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+
+  // HC-SR04 with generic OUT_PIN/IN_PIN + pulseIn
+  const ultraSketch = `
+    const int OUT_PIN = 7;
+    const int IN_PIN = 8;
+    void setup() { pinMode(OUT_PIN, OUTPUT); pinMode(IN_PIN, INPUT); }
+    void loop() {
+      digitalWrite(OUT_PIN, HIGH); delayMicroseconds(10); digitalWrite(OUT_PIN, LOW);
+      long dur = pulseIn(IN_PIN, HIGH);
+    }
+  `;
+  const ultraRes = autoWireFromSketch(ultraSketch, uno, [uno], [], m);
+  const sr04 = ultraRes.parts.find((p) => p.type === 'hc-sr04');
+  assert.ok(sr04, 'Expected hc-sr04 from generic pulseIn');
+  assert.ok(ultraRes.wires.some((w) => w.from.pinId === '7' && w.to.partId === sr04!.id && w.to.pinId === 'TRIG'));
+  assert.ok(ultraRes.wires.some((w) => w.from.pinId === '8' && w.to.partId === sr04!.id && w.to.pinId === 'ECHO'));
+
+  // Shared 1-instance AO+DO/OUT + PIR + fallback pushbutton + Keypad assignment-style
+  const sharedSketch = `
+    #include <Keypad.h>
+    byte R_PINS[4] = {2, 3, 4, 5};
+    byte C_PINS[4] = {6, 7, 8, 9};
+    Keypad kp = Keypad(makeKeymap(keys), R_PINS, C_PINS, 4, 4);
+    const int S1_A = A0; // sensor IR halangan
+    const int S1_D = 10; // sensor IR halangan
+    const int S2_A = A1; // kelembaban tanah
+    const int S2_D = 11; // kelembaban tanah
+    const int S3_A = A2; // sensor hujan
+    const int S3_D = 12; // sensor hujan
+    const int S4_A = A3; // sensor gas mq2
+    const int S4_D = 13; // sensor gas mq2
+    void setup() {
+      pinMode(S1_D, INPUT_PULLUP);
+      pinMode(S2_D, INPUT);
+      pinMode(S3_D, INPUT);
+      pinMode(S4_D, INPUT_PULLUP);
+    }
+    void loop() {
+      analogRead(S1_A); digitalRead(S1_D);
+      analogRead(S2_A); digitalRead(S2_D);
+      analogRead(S3_A); digitalRead(S3_D);
+      analogRead(S4_A); digitalRead(S4_D);
+    }
+  `;
+  const sharedRes = autoWireFromSketch(sharedSketch, uno, [uno], [], m);
+  assert.equal(sharedRes.parts.filter((p) => p.type === 'keypad-4x4').length, 1);
+  assert.equal(sharedRes.parts.filter((p) => p.type === 'ir-obstacle').length, 1);
+  assert.equal(sharedRes.parts.filter((p) => p.type === 'soil-moisture').length, 1);
+  assert.equal(sharedRes.parts.filter((p) => p.type === 'rain-sensor').length, 1);
+  assert.equal(sharedRes.parts.filter((p) => p.type === 'mq2').length, 1);
+
+  // PIR vs generic pushbutton fallback
+  const pirRes = autoWireFromSketch(
+    `const int IN_PIN = 2; // sensor gerak PIR\nvoid setup() { pinMode(IN_PIN, INPUT_PULLUP); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(pirRes.parts.filter((p) => p.type === 'pir').length, 1);
+
+  const btnRes = autoWireFromSketch(
+    `const int IN_PIN = 2;\nvoid setup() { pinMode(IN_PIN, INPUT_PULLUP); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(btnRes.parts.filter((p) => p.type === 'pushbutton').length, 1);
+});
+
+test('autoWireFromSketch detects actuators, displays, and drivers with generic pin names', () => {
+  const m = buildCatalogTestManifests();
+  const uno: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+
+  // servo vs servo-360 with generic SERVO_PIN
+  const s360Res = autoWireFromSketch(
+    `#include <Servo.h>\nServo s;\nconst int SERVO_PIN = 9; // servo continuous roda\nvoid setup() { s.attach(SERVO_PIN); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(s360Res.parts.filter((p) => p.type === 'servo-360').length, 1);
+
+  const s180Res = autoWireFromSketch(
+    `#include <Servo.h>\nServo s;\nconst int SERVO_PIN = 9;\nvoid setup() { s.attach(SERVO_PIN); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(s180Res.parts.filter((p) => p.type === 'servo').length, 1);
+
+  // buzzer (tone & generic alarm), relay (pompa), single dc-motor (kipas), default led + resistor
+  const toneRes = autoWireFromSketch(
+    `const int OUT_PIN = 8;\nvoid setup() { tone(OUT_PIN, 1000); noTone(OUT_PIN); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(toneRes.parts.filter((p) => p.type === 'buzzer').length, 1);
+
+  const alarmRes = autoWireFromSketch(
+    `const int OUT_PIN = 8; // alarm beep\nvoid setup() { pinMode(OUT_PIN, OUTPUT); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(alarmRes.parts.filter((p) => p.type === 'buzzer').length, 1);
+
+  const relayRes = autoWireFromSketch(
+    `const int OUT_PIN = 6; // pompa air solenoid\nvoid setup() { pinMode(OUT_PIN, OUTPUT); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(relayRes.parts.filter((p) => p.type === 'relay').length, 1);
+
+  const fanRes = autoWireFromSketch(
+    `const int OUT_PIN = 5; // kipas DC\nvoid setup() { analogWrite(OUT_PIN, 200); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(fanRes.parts.filter((p) => p.type === 'dc-motor').length, 1);
+
+  const ledRes = autoWireFromSketch(
+    `const int OUT_PIN = 13;\nvoid setup() { pinMode(OUT_PIN, OUTPUT); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(ledRes.parts.filter((p) => p.type === 'led').length, 1);
+  assert.equal(ledRes.parts.filter((p) => p.type === 'resistor').length, 1);
+
+  // RGB LED with 3 generic PWM pins
+  const rgbRes = autoWireFromSketch(
+    `// Kontrol warna RGB\nconst int OUT_1 = 3;\nconst int OUT_2 = 5;\nconst int OUT_3 = 6;\nvoid setup() { analogWrite(OUT_1, 255); analogWrite(OUT_2, 128); analogWrite(OUT_3, 0); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(rgbRes.parts.filter((p) => p.type === 'rgb-led').length, 1);
+
+  // 7-Segment with 7 generic pins
+  const segRes = autoWireFromSketch(
+    `// Display 7seg counter\nconst int PINS[] = {2, 3, 4, 5, 6, 7, 8};\nvoid setup() { for (int i=0;i<7;i++) pinMode(PINS[i], OUTPUT); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  assert.equal(segRes.parts.filter((p) => p.type === 'seven-seg').length, 1);
+
+  // L298N + DC Motor with generic pins + h-bridge context (verify 12V & GND wired)
+  const l298nRes = autoWireFromSketch(
+    `// Driver H-Bridge L298N\nconst int OUT_1 = 9;\nconst int OUT_2 = 7;\nconst int OUT_3 = 8;\nvoid setup() { analogWrite(OUT_1, 180); pinMode(OUT_2, OUTPUT); pinMode(OUT_3, OUTPUT); }`,
+    uno,
+    [uno],
+    [],
+    m
+  );
+  const drv = l298nRes.parts.find((p) => p.type === 'l298n');
+  assert.ok(drv, 'Expected l298n from generic pins + context');
+  assert.equal(l298nRes.parts.filter((p) => p.type === 'dc-motor').length, 1);
+  assert.ok(l298nRes.wires.some((w) => (w.to.partId === drv!.id && w.to.pinId === '12V') || (w.from.partId === drv!.id && w.from.pinId === '12V')));
+  assert.ok(l298nRes.wires.some((w) => (w.to.partId === drv!.id && w.to.pinId === 'GND') || (w.from.partId === drv!.id && w.from.pinId === 'GND')));
+});
+
+test('autoWireFromSketch detects all protocol modules and explicit power/breadboard modules only when mentioned', () => {
+  const m = buildCatalogTestManifests();
+  const uno: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 48, y: 156, rotation: 0, props: {} };
+
+  const protoSketch = `
+    #include <Wire.h>
+    #include <LiquidCrystal_I2C.h>
+    #include <Adafruit_SSD1306.h>
+    #include <RTClib.h>
+    #include <MFRC522.h>
+    #include <LedControl.h>
+    #include <Adafruit_NeoPixel.h>
+    #include <Stepper.h>
+    #include <SoftwareSerial.h>
+    LiquidCrystal_I2C lcd = LiquidCrystal_I2C(0x27, 16, 2);
+    Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+    RTC_DS3231 rtc;
+    MFRC522 rfid(10, 9);
+    LedControl lc = LedControl(A2, A3, 8, 1);
+    Adafruit_NeoPixel strip(8, 6, NEO_GRB);
+    Stepper stp(2048, 2, 3, 4, 5);
+    SoftwareSerial gpsSerial(A0, A1); // GPS NEO-6M NMEA
+    void setup() {
+      Wire.beginTransmission(0x68); Wire.write(0x6B); Wire.endTransmission(); // MPU6050
+    }
+  `;
+  const protoRes = autoWireFromSketch(protoSketch, uno, [uno], [], m);
+  for (const t of [
+    'lcd-1602-i2c',
+    'oled-ssd1306',
+    'ds3231-rtc',
+    'mpu6050',
+    'rfid-rc522',
+    'max7219',
+    'neopixel-strip',
+    'stepper',
+    'gps-neo6m',
+  ]) {
+    assert.equal(protoRes.parts.filter((p) => p.type === t).length, 1, `Expected 1 ${t}`);
+  }
+  // Power/breadboard must NOT spawn when unmentioned
+  for (const pt of ['battery-18650', 'battery-lipo-3s', 'buck-lm2596', 'boost-mt3608', 'breadboard-half']) {
+    assert.equal(protoRes.parts.filter((p) => p.type === pt).length, 0, `${pt} must not spawn unmentioned`);
+  }
+
+  // Bluetooth HC-05 + explicit power & breadboard
+  const pwrSketch = `
+    // Gunakan breadboard, baterai 18650 2S, dan step-down buck LM2596
+    #include <SoftwareSerial.h>
+    SoftwareSerial bt = SoftwareSerial(4, 3);
+    void setup() { bt.begin(9600); }
+  `;
+  const pwrRes = autoWireFromSketch(pwrSketch, uno, [uno], [], m);
+  assert.equal(pwrRes.parts.filter((p) => p.type === 'hc-05').length, 1);
+  assert.equal(pwrRes.parts.filter((p) => p.type === 'battery-18650').length, 1);
+  assert.equal(pwrRes.parts.filter((p) => p.type === 'buck-lm2596').length, 1);
+  assert.equal(pwrRes.parts.filter((p) => p.type === 'breadboard-half').length, 1);
+
+  // LiPo 3S + Boost MT3608 + L298N
+  const boostSketch = `
+    // Baterai LiPo 3S + boost MT3608 untuk L298N
+    const int OUT_1 = 5;
+    const int OUT_2 = 6;
+    void setup() { pinMode(OUT_1, OUTPUT); pinMode(OUT_2, OUTPUT); }
+  `;
+  const boostRes = autoWireFromSketch(boostSketch, uno, [uno], [], m);
+  assert.equal(boostRes.parts.filter((p) => p.type === 'battery-lipo-3s').length, 1);
+  assert.equal(boostRes.parts.filter((p) => p.type === 'boost-mt3608').length, 1);
+  assert.equal(boostRes.parts.filter((p) => p.type === 'l298n').length, 1);
+});
