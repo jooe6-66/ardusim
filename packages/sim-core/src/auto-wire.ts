@@ -487,7 +487,10 @@ export function autoWireFromSketch(
           skippedWiredPins += 1;
           continue;
         }
-        const part = ensurePart('servo');
+        const servoType = /360|cont|wheel|roda|drive/i.test(`${varName} ${pinVarHints.get(pin) ?? ''}`)
+          ? 'servo-360'
+          : 'servo';
+        const part = ensurePart(servoType);
         if (part) {
           linkPower(part.id);
           linkMcu(pin, part.id, 'SIG');
@@ -750,8 +753,16 @@ export function autoWireFromSketch(
     }
   }
 
-  // 4c. Analog sensors (MQ-2, LM35, LDR, Potentiometer)
+  // 4c. Analog sensors (MQ-2, IR Obstacle, Soil Moisture, Rain, Water Level, LM35, LDR, Potentiometer)
   let sharedMq2: PartInstance | null = null;
+  let sharedIr: PartInstance | null = null;
+  let sharedSoil: PartInstance | null = null;
+  let sharedRain: PartInstance | null = null;
+  const irRe = /(?:^|[^a-z])ir(?:[^a-z]|sensor|pin|out|ao|do|obs|$)|infrared|obstacle|halangan|tcrt/i;
+  const soilRe = /soil|moist|tanah|kelembap|yl69/i;
+  const rainRe = /rain|hujan|drop|tetes/i;
+  const waterRe = /water|air_?level|level_?air|tinggi_?air|tangki|tank|flood|banjir/i;
+
   for (const p of analogPins) {
     if (claimedMcuPins.has(p)) continue;
     const hint = pinVarHints.get(p) ?? '';
@@ -763,6 +774,39 @@ export function autoWireFromSketch(
           linkPower(part.id);
         }
         linkMcu(p, part.id, 'AOUT');
+      }
+    } else if (irRe.test(hint)) {
+      const part: PartInstance | null = sharedIr ?? ensurePart('ir-obstacle');
+      if (part) {
+        if (!sharedIr) {
+          sharedIr = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'AO');
+      }
+    } else if (soilRe.test(hint)) {
+      const part: PartInstance | null = sharedSoil ?? ensurePart('soil-moisture');
+      if (part) {
+        if (!sharedSoil) {
+          sharedSoil = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'AO');
+      }
+    } else if (rainRe.test(hint)) {
+      const part: PartInstance | null = sharedRain ?? ensurePart('rain-sensor');
+      if (part) {
+        if (!sharedRain) {
+          sharedRain = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'AO');
+      }
+    } else if (waterRe.test(hint)) {
+      const part = ensurePart('water-level');
+      if (part) {
+        linkPower(part.id);
+        linkMcu(p, part.id, 'AO');
       }
     } else if (/lm35|temp|suhu/i.test(hint)) {
       const part = ensurePart('lm35');
@@ -788,7 +832,7 @@ export function autoWireFromSketch(
     }
   }
 
-  // 4d. Digital inputs (PIR, MQ-2 DOUT, Pushbutton)
+  // 4d. Digital inputs (PIR, MQ-2 DOUT, IR Obstacle OUT, Soil DO, Rain DO, Pushbutton)
   for (const p of inputPins) {
     if (claimedMcuPins.has(p)) continue;
     const hint = pinVarHints.get(p) ?? '';
@@ -806,6 +850,33 @@ export function autoWireFromSketch(
           linkPower(part.id);
         }
         linkMcu(p, part.id, 'DOUT');
+      }
+    } else if (irRe.test(hint)) {
+      const part: PartInstance | null = sharedIr ?? ensurePart('ir-obstacle');
+      if (part) {
+        if (!sharedIr) {
+          sharedIr = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'OUT');
+      }
+    } else if (soilRe.test(hint)) {
+      const part: PartInstance | null = sharedSoil ?? ensurePart('soil-moisture');
+      if (part) {
+        if (!sharedSoil) {
+          sharedSoil = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'DO');
+      }
+    } else if (rainRe.test(hint)) {
+      const part: PartInstance | null = sharedRain ?? ensurePart('rain-sensor');
+      if (part) {
+        if (!sharedRain) {
+          sharedRain = part;
+          linkPower(part.id);
+        }
+        linkMcu(p, part.id, 'DO');
       }
     } else {
       const btn = ensurePart('pushbutton');

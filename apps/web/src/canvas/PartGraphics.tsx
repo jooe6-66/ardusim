@@ -570,6 +570,118 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
     );
   }
 
+  if (part.type === 'ir-obstacle') {
+    const distanceCm = Math.min(30, Math.max(2, Number(part.props.distanceCm ?? 20)));
+    const thresholdCm = Math.min(30, Math.max(2, Number(part.props.thresholdCm ?? 10)));
+    const detected = distanceCm <= thresholdCm;
+    return (
+      <g>
+        <rect x={6} y={12} width={60} height={60} rx={5} fill="#1D4ED8" stroke={selected ? 'var(--accent)' : '#1E3A8A'} strokeWidth={selected ? 2.5 : 1.4} />
+        {/* Twin IR emitter (dark) & receiver (clear) LEDs */}
+        <circle cx={24} cy={12} r={6.5} fill="#1E293B" stroke="#0F172A" strokeWidth={1.2} />
+        <circle cx={48} cy={12} r={6.5} fill="#E2E8F0" stroke="#64748B" strokeWidth={1.2} />
+        {/* Blue trimpot */}
+        <rect x={26} y={32} width={20} height={18} rx={2} fill="#0284C7" stroke="#0369A1" strokeWidth={1} />
+        <circle cx={36} cy={41} r={5} fill="#E0F2FE" />
+        {/* PWR + Obstacle LEDs */}
+        <circle cx={14} cy={60} r={3} fill="#22C55E" />
+        <circle cx={58} cy={60} r={3.5} fill={detected ? '#EF4444' : '#334155'} />
+        <text x={36} y={-2} textAnchor="middle" fill={detected ? 'var(--danger)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
+          IR {distanceCm}cm
+        </text>
+        {manifest.pins.map((p) => (
+          <line key={p.id} x1={p.x} y1={72} x2={p.x} y2={80} stroke="#94A3B8" strokeWidth={2.4} />
+        ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'soil-moisture') {
+    const moisturePct = Math.min(100, Math.max(0, Number(part.props.moisturePct ?? 35)));
+    const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+    const wet = moisturePct >= thresholdPct;
+    const wetH = Math.round((moisturePct / 100) * 38);
+    return (
+      <g>
+        {/* Comparator PCB */}
+        <rect x={8} y={48} width={56} height={32} rx={4} fill="#1E40AF" stroke={selected ? 'var(--accent)' : '#172554'} strokeWidth={selected ? 2.5 : 1.3} />
+        {/* Dual gold fork probe */}
+        <rect x={18} y={6} width={11} height={42} rx={4} fill="#B45309" stroke="#F59E0B" strokeWidth={1.2} />
+        <rect x={43} y={6} width={11} height={42} rx={4} fill="#B45309" stroke="#F59E0B" strokeWidth={1.2} />
+        {wetH > 0 && (
+          <>
+            <rect x={18} y={48 - wetH} width={11} height={wetH} rx={2} fill="#0EA5E9" opacity={0.45} />
+            <rect x={43} y={48 - wetH} width={11} height={wetH} rx={2} fill="#0EA5E9" opacity={0.45} />
+          </>
+        )}
+        <circle cx={16} cy={70} r={2.8} fill="#22C55E" />
+        <circle cx={56} cy={70} r={3.2} fill={wet ? '#10B981' : '#334155'} />
+        <text x={36} y={-2} textAnchor="middle" fill={wet ? 'var(--primary)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
+          SOIL {moisturePct}%
+        </text>
+        {manifest.pins.map((p) => (
+          <line key={p.id} x1={p.x} y1={80} x2={p.x} y2={88} stroke="#94A3B8" strokeWidth={2.4} />
+        ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'water-level') {
+    const levelPct = Math.min(100, Math.max(0, Number(part.props.levelPct ?? 25)));
+    const fillH = Math.round((levelPct / 100) * 56);
+    return (
+      <g>
+        <rect x={6} y={6} width={48} height={74} rx={4} fill="#B91C1C" stroke={selected ? 'var(--accent)' : '#7F1D1D'} strokeWidth={selected ? 2.5 : 1.4} />
+        {/* Parallel exposed copper sense traces */}
+        {[14, 21, 28, 35, 42].map((tx) => (
+          <line key={tx} x1={tx} y1={14} x2={tx} y2={70} stroke="#F59E0B" strokeWidth={2} />
+        ))}
+        {/* Translucent rising water overlay */}
+        {fillH > 0 && (
+          <rect x={8} y={70 - fillH} width={44} height={fillH} rx={2} fill="#06B6D4" opacity={0.5} />
+        )}
+        <circle cx={13} cy={74} r={2.5} fill="#22C55E" />
+        <text x={30} y={-2} textAnchor="middle" fill="var(--primary)" fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
+          H2O {levelPct}%
+        </text>
+        {manifest.pins.map((p) => (
+          <line key={p.id} x1={p.x} y1={80} x2={p.x} y2={88} stroke="#94A3B8" strokeWidth={2.4} />
+        ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'rain-sensor') {
+    const rainPct = Math.min(100, Math.max(0, Number(part.props.rainPct ?? 0)));
+    const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 40)));
+    const raining = rainPct >= thresholdPct;
+    const dropCount = Math.round((rainPct / 100) * 6);
+    const dropCoords: Array<[number, number]> = [[20, 18], [42, 22], [64, 18], [28, 34], [54, 34], [40, 44]];
+    return (
+      <g>
+        {/* Rain sensing plate */}
+        <rect x={8} y={6} width={68} height={46} rx={4} fill="#1E293B" stroke={selected ? 'var(--accent)' : '#0F172A'} strokeWidth={selected ? 2.5 : 1.4} />
+        {[14, 22, 30, 38, 46, 54, 62, 68].map((rx) => (
+          <line key={rx} x1={rx} y1={12} x2={rx} y2={46} stroke="#CBD5E1" strokeWidth={2} />
+        ))}
+        {/* Progressive water droplets */}
+        {dropCoords.slice(0, dropCount).map(([cx, cy], idx) => (
+          <circle key={idx} cx={cx} cy={cy} r={4.2} fill="#38BDF8" opacity={0.85} />
+        ))}
+        {/* Blue comparator strip */}
+        <rect x={12} y={54} width={60} height={26} rx={3} fill="#1D4ED8" stroke="#1E3A8A" strokeWidth={1.2} />
+        <circle cx={20} cy={67} r={2.8} fill="#22C55E" />
+        <circle cx={64} cy={67} r={3.2} fill={raining ? '#38BDF8' : '#334155'} />
+        <text x={42} y={-2} textAnchor="middle" fill={raining ? 'var(--primary)' : 'var(--text-primary)'} fontSize={8.5} fontWeight={700} fontFamily="var(--font-mono)">
+          RAIN {rainPct}%
+        </text>
+        {manifest.pins.map((p) => (
+          <line key={p.id} x1={p.x} y1={80} x2={p.x} y2={88} stroke="#94A3B8" strokeWidth={2.4} />
+        ))}
+      </g>
+    );
+  }
+
   // --- DISPLAYS ---
   if (part.type === 'lcd-1602-i2c') {
     const lcd = snapshot?.lcdDisplays?.[part.id];
@@ -764,6 +876,36 @@ export const PartGraphics: React.FC<PartGraphicsProps> = ({
         </g>
         <text x={68} y={40} textAnchor="middle" fill="#EFF6FF" fontSize={9.5} fontWeight={700} fontFamily="var(--font-mono)">
           {angle}°
+        </text>
+        {manifest.pins.map((p) => (
+          <line key={p.id} x1={p.x} y1={60} x2={p.x} y2={72} stroke={p.id === 'VCC' ? '#DC2626' : p.id === 'SIG' ? '#D97706' : '#334155'} strokeWidth={2.6} />
+        ))}
+      </g>
+    );
+  }
+
+  if (part.type === 'servo-360') {
+    const s360 = snapshot?.running ? snapshot.servo360States?.[part.id] : undefined;
+    const angleDeg = s360?.angleDeg ?? 0;
+    const rpm = s360?.rpm ?? 0;
+    const dirLabel = s360?.direction === 'cw' ? 'CW' : s360?.direction === 'ccw' ? 'CCW' : 'STOP';
+    return (
+      <g>
+        <rect x={8} y={14} width={80} height={46} rx={5} fill="#0F172A" stroke={selected ? 'var(--accent)' : '#334155'} strokeWidth={selected ? 2.5 : 1.5} />
+        <rect x={2} y={24} width={92} height={10} rx={2} fill="#1E293B" />
+        {/* Continuous 360° spoked wheel rotor centered at (34, 37) */}
+        <circle cx={34} cy={37} r={17} fill="#1E293B" stroke="#38BDF8" strokeWidth={1.5} />
+        <g transform={`rotate(${angleDeg} 34 37)`}>
+          <line x1={34} y1={22} x2={34} y2={52} stroke="#F8FAFC" strokeWidth={2.6} strokeLinecap="round" />
+          <line x1={19} y1={37} x2={49} y2={37} stroke="#94A3B8" strokeWidth={2.2} strokeLinecap="round" />
+          <circle cx={34} cy={24} r={2.2} fill="#F59E0B" />
+          <circle cx={34} cy={37} r={4} fill="#0F6660" stroke="#F8FAFC" strokeWidth={1} />
+        </g>
+        <text x={69} y={34} textAnchor="middle" fill="#38BDF8" fontSize={8} fontWeight={700} fontFamily="var(--font-mono)">
+          {dirLabel}
+        </text>
+        <text x={69} y={45} textAnchor="middle" fill="#F8FAFC" fontSize={7.5} fontWeight={600} fontFamily="var(--font-mono)">
+          {Math.abs(rpm)} RPM
         </text>
         {manifest.pins.map((p) => (
           <line key={p.id} x1={p.x} y1={60} x2={p.x} y2={72} stroke={p.id === 'VCC' ? '#DC2626' : p.id === 'SIG' ? '#D97706' : '#334155'} strokeWidth={2.6} />

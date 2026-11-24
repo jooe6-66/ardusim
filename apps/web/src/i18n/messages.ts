@@ -99,6 +99,22 @@ export interface Messages {
   ldrLuxLabel: string;
   gasLevelLabel: string;
   gasThresholdLabel: string;
+  irDistanceLabel: string;
+  irThresholdLabel: string;
+  irStatusLabel: string;
+  irDetected: string;
+  irClear: string;
+  soilMoistureLabel: string;
+  soilThresholdLabel: string;
+  soilWet: string;
+  soilDry: string;
+  waterLevelLabel: string;
+  rainIntensityLabel: string;
+  rainThresholdLabel: string;
+  rainDetected: string;
+  rainDry: string;
+  sensorAnalogOutLabel: string;
+  sensorDigitalOutLabel: string;
   i2cAddrLabel: string;
   lcdColorLabel: string;
   lcdGreen: string;
@@ -113,6 +129,13 @@ export interface Messages {
   relayEnergized: string;
   relayIdle: string;
   servoAngleLabel: string;
+  servo360SpeedLabel: string;
+  servo360AngleLabel: string;
+  servo360PulseLabel: string;
+  servo360MaxRpmLabel: string;
+  servo360Cw: string;
+  servo360Ccw: string;
+  servo360Stop: string;
   buzzerFreqLabel: string;
   buzzerAudioOn: string;
   buzzerAudioOff: string;
@@ -312,6 +335,22 @@ export const MESSAGES: Record<Lang, Messages> = {
     ldrLuxLabel: 'Intensitas Cahaya (Lux)',
     gasLevelLabel: 'Konsentrasi Gas (%)',
     gasThresholdLabel: 'Ambang DOUT (%)',
+    irDistanceLabel: 'Jarak Objek IR (cm)',
+    irThresholdLabel: 'Ambang Deteksi (cm)',
+    irStatusLabel: 'Status Halangan',
+    irDetected: 'Halangan Terdeteksi (LOW)',
+    irClear: 'Bebas / Aman (HIGH)',
+    soilMoistureLabel: 'Kelembapan Tanah (%)',
+    soilThresholdLabel: 'Ambang Basah DO (%)',
+    soilWet: 'Tanah Basah (LOW)',
+    soilDry: 'Tanah Kering (HIGH)',
+    waterLevelLabel: 'Tinggi Muka Air (%)',
+    rainIntensityLabel: 'Intensitas Hujan (%)',
+    rainThresholdLabel: 'Ambang Hujan DO (%)',
+    rainDetected: 'Hujan Terdeteksi (LOW)',
+    rainDry: 'Kering (HIGH)',
+    sensorAnalogOutLabel: 'Tegangan Analog (AO)',
+    sensorDigitalOutLabel: 'Keluaran Digital',
     i2cAddrLabel: 'Alamat I2C',
     lcdColorLabel: 'Warna Lampu Latar',
     lcdGreen: 'Hijau Klasik',
@@ -326,6 +365,13 @@ export const MESSAGES: Record<Lang, Messages> = {
     relayEnergized: 'Aktif (COM -> NO)',
     relayIdle: 'Standby (COM -> NC)',
     servoAngleLabel: 'Sudut Servo',
+    servo360SpeedLabel: 'Kecepatan & Arah',
+    servo360AngleLabel: 'Sudut Kumulatif',
+    servo360PulseLabel: 'Lebar Pulsa PWM',
+    servo360MaxRpmLabel: 'Kecepatan Maks (RPM)',
+    servo360Cw: 'CW',
+    servo360Ccw: 'CCW',
+    servo360Stop: 'BERHENTI',
     buzzerFreqLabel: 'Frekuensi Nada',
     buzzerAudioOn: 'Suara Buzzer: Aktif',
     buzzerAudioOff: 'Suara Buzzer: Bisukan',
@@ -526,6 +572,22 @@ export const MESSAGES: Record<Lang, Messages> = {
     ldrLuxLabel: 'Light Intensity (Lux)',
     gasLevelLabel: 'Gas Concentration (%)',
     gasThresholdLabel: 'DOUT Threshold (%)',
+    irDistanceLabel: 'IR Object Distance (cm)',
+    irThresholdLabel: 'Detection Threshold (cm)',
+    irStatusLabel: 'Obstacle Status',
+    irDetected: 'Obstacle Detected (LOW)',
+    irClear: 'Clear (HIGH)',
+    soilMoistureLabel: 'Soil Moisture (%)',
+    soilThresholdLabel: 'Wet Threshold DO (%)',
+    soilWet: 'Wet Soil (LOW)',
+    soilDry: 'Dry Soil (HIGH)',
+    waterLevelLabel: 'Water Level (%)',
+    rainIntensityLabel: 'Rain Intensity (%)',
+    rainThresholdLabel: 'Rain Threshold DO (%)',
+    rainDetected: 'Rain Detected (LOW)',
+    rainDry: 'Dry (HIGH)',
+    sensorAnalogOutLabel: 'Analog Output (AO)',
+    sensorDigitalOutLabel: 'Digital Output',
     i2cAddrLabel: 'I2C Address',
     lcdColorLabel: 'Backlight Color',
     lcdGreen: 'Classic Green',
@@ -540,6 +602,13 @@ export const MESSAGES: Record<Lang, Messages> = {
     relayEnergized: 'Energized (COM -> NO)',
     relayIdle: 'Idle (COM -> NC)',
     servoAngleLabel: 'Servo Angle',
+    servo360SpeedLabel: 'Speed & Direction',
+    servo360AngleLabel: 'Cumulative Angle',
+    servo360PulseLabel: 'PWM Pulse Width',
+    servo360MaxRpmLabel: 'Max Speed (RPM)',
+    servo360Cw: 'CW',
+    servo360Ccw: 'CCW',
+    servo360Stop: 'STOP',
     buzzerFreqLabel: 'Tone Frequency',
     buzzerAudioOn: 'Buzzer Audio: On',
     buzzerAudioOff: 'Buzzer Audio: Muted',

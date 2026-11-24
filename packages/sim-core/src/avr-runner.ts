@@ -38,7 +38,7 @@ import {
   StepperMotorDevice,
   buildNmeaSentence,
 } from './devices/spi-uart-devices.js';
-import { BuzzerDevice, DhtDevice, HcSr04Device, ServoDevice } from './devices/timing-devices.js';
+import { BuzzerDevice, ContinuousServoDevice, DhtDevice, HcSr04Device, ServoDevice } from './devices/timing-devices.js';
 import { parseIntelHex } from './hex-parser.js';
 import {
   megaAdcConfig,
@@ -68,6 +68,7 @@ import {
   PartInstance,
   PartManifest,
   PinModeState,
+  Servo360VisualState,
   SimSnapshot,
   StepperVisualState,
   Wire,
@@ -92,6 +93,7 @@ interface AttachedPeripherals {
   pinCallbacks: Map<string, Array<(state: PinState) => void>>;
   drivenMcuPins: Set<string>;
   servos: Map<string, ServoDevice>;
+  servos360: Map<string, ContinuousServoDevice>;
   buzzers: Map<string, BuzzerDevice>;
   ultrasonics: Map<string, { dev: HcSr04Device; trigKey: string; echoKey: string }>;
   dhts: Map<string, { dev: DhtDevice; dataKey: string }>;
@@ -142,6 +144,7 @@ export class AvrSimulator {
     pinCallbacks: new Map(),
     drivenMcuPins: new Set(),
     servos: new Map(),
+    servos360: new Map(),
     buzzers: new Map(),
     ultrasonics: new Map(),
     dhts: new Map(),
@@ -366,6 +369,7 @@ export class AvrSimulator {
     const pinCallbacks = new Map<string, Array<(state: PinState) => void>>();
     const drivenMcuPins = new Set<string>();
     const servos = new Map<string, ServoDevice>();
+    const servos360 = new Map<string, ContinuousServoDevice>();
     const buzzers = new Map<string, BuzzerDevice>();
     const ultrasonics = new Map<string, { dev: HcSr04Device; trigKey: string; echoKey: string }>();
     const dhts = new Map<string, { dev: DhtDevice; dataKey: string }>();
@@ -450,6 +454,15 @@ export class AvrSimulator {
           const dev = prev.servos.get(part.id) ?? new ServoDevice(this.cpu, UNO_CLOCK_HZ);
           addPinCb(sig.avrPort, sig.avrBit, (st) => dev.onSignalChange(st === PinState.High));
           servos.set(part.id, dev);
+        }
+      } else if (part.type === 'servo-360') {
+        const sig = this.findConnectedMcuPin(part.id, 'SIG');
+        if (sig) {
+          const maxRpm = Number(part.props.maxRpm ?? 120);
+          const dev = prev.servos360.get(part.id) ?? new ContinuousServoDevice(this.cpu, UNO_CLOCK_HZ, maxRpm);
+          dev.maxRpm = maxRpm;
+          addPinCb(sig.avrPort, sig.avrBit, (st) => dev.onSignalChange(st === PinState.High));
+          servos360.set(part.id, dev);
         }
       } else if (part.type === 'buzzer') {
         const pos = this.findConnectedMcuPin(part.id, '+');
@@ -577,6 +590,7 @@ export class AvrSimulator {
       pinCallbacks,
       drivenMcuPins,
       servos,
+      servos360,
       buzzers,
       ultrasonics,
       dhts,
@@ -775,6 +789,13 @@ export class AvrSimulator {
     const servoAngles: Record<string, number> = {};
     for (const [id, dev] of this.attached.servos.entries()) servoAngles[id] = dev.angleDeg;
 
+    const servo360States: Record<string, Servo360VisualState> = {};
+    for (const [id, dev] of this.attached.servos360.entries()) {
+      const st = dev.getState();
+      servo360States[id] = st;
+      servoAngles[id] = Math.round(st.angleDeg);
+    }
+
     const buzzerHz: Record<string, number> = {};
     for (const [id, dev] of this.attached.buzzers.entries()) buzzerHz[id] = dev.sampleAndReset();
 
@@ -809,6 +830,7 @@ export class AvrSimulator {
     return {
       onboardLed,
       servoAngles,
+      servo360States,
       buzzerHz,
       lcdDisplays,
       oledDisplays,
@@ -859,6 +881,7 @@ export class AvrSimulator {
       capacitorVoltages: solved.capacitorVoltages,
       diodeConducting: solved.diodeConducting,
       servoAngles: attached.servoAngles,
+      servo360States: attached.servo360States,
       buzzerHz: attached.buzzerHz,
       relayEnergized: solved.relayEnergized,
       motorStates: solved.motorStates,
@@ -1079,6 +1102,7 @@ export class MultiMcuSimulator {
     const pinVoltages: Record<string, number> = {};
     const onboardLeds: Record<string, boolean> = {};
     const servoAngles: Record<string, number> = {};
+    const servo360States: Record<string, Servo360VisualState> = {};
     const buzzerHz: Record<string, number> = {};
     const lcdDisplays: Record<string, LcdDisplayState> = {};
     const oledDisplays: Record<string, OledDisplayState> = {};
@@ -1095,6 +1119,7 @@ export class MultiMcuSimulator {
       const att = sim.collectAttachedSnapshot(dutyAccum.get(id)!);
       onboardLeds[id] = att.onboardLed;
       Object.assign(servoAngles, att.servoAngles);
+      Object.assign(servo360States, att.servo360States);
       Object.assign(buzzerHz, att.buzzerHz);
       Object.assign(lcdDisplays, att.lcdDisplays);
       Object.assign(oledDisplays, att.oledDisplays);
@@ -1130,6 +1155,7 @@ export class MultiMcuSimulator {
       capacitorVoltages: lastSolved.capacitorVoltages,
       diodeConducting: lastSolved.diodeConducting,
       servoAngles,
+      servo360States,
       buzzerHz,
       relayEnergized: lastSolved.relayEnergized,
       motorStates: lastSolved.motorStates,

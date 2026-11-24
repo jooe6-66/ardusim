@@ -556,6 +556,169 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
           </>
         )}
 
+        {part.type === 'ir-obstacle' && (() => {
+          const dist = Math.min(30, Math.max(2, Number(part.props.distanceCm ?? 20)));
+          const th = Math.min(30, Math.max(2, Number(part.props.thresholdCm ?? 10)));
+          const aoV = 0.2 + ((dist - 2) / 28) * 4.5;
+          const detected = dist <= th;
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="ir-dist">
+                  {t.irDistanceLabel}: {dist} cm
+                </label>
+                <input
+                  id="ir-dist"
+                  type="range"
+                  min={2}
+                  max={30}
+                  step={1}
+                  value={dist}
+                  onChange={(e) => onUpdatePartProps(part.id, { distanceCm: Number(e.target.value) })}
+                />
+              </div>
+              <div className="field-group">
+                <label className="field-label" htmlFor="ir-th">
+                  {t.irThresholdLabel}: {th} cm
+                </label>
+                <input
+                  id="ir-th"
+                  type="range"
+                  min={2}
+                  max={30}
+                  step={1}
+                  value={th}
+                  onChange={(e) => onUpdatePartProps(part.id, { thresholdCm: Number(e.target.value) })}
+                />
+              </div>
+              <div className="metric-card">
+                <span>{t.irStatusLabel}</span>
+                <span className="metric-value">{detected ? t.irDetected : t.irClear}</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorAnalogOutLabel}</span>
+                <span className="metric-value">{aoV.toFixed(2)} V</span>
+              </div>
+            </>
+          );
+        })()}
+
+        {part.type === 'soil-moisture' && (() => {
+          const moist = Math.min(100, Math.max(0, Number(part.props.moisturePct ?? 35)));
+          const th = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+          const aoV = 4.8 - (moist / 100) * 4.3;
+          const wet = moist >= th;
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="soil-moist">
+                  {t.soilMoistureLabel}: {moist}%
+                </label>
+                <input
+                  id="soil-moist"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={moist}
+                  onChange={(e) => onUpdatePartProps(part.id, { moisturePct: Number(e.target.value) })}
+                />
+              </div>
+              <div className="field-group">
+                <label className="field-label" htmlFor="soil-th">
+                  {t.soilThresholdLabel}: {th}%
+                </label>
+                <input
+                  id="soil-th"
+                  type="range"
+                  min={5}
+                  max={95}
+                  value={th}
+                  onChange={(e) => onUpdatePartProps(part.id, { thresholdPct: Number(e.target.value) })}
+                />
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorDigitalOutLabel}</span>
+                <span className="metric-value">{wet ? t.soilWet : t.soilDry}</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorAnalogOutLabel}</span>
+                <span className="metric-value">{aoV.toFixed(2)} V</span>
+              </div>
+            </>
+          );
+        })()}
+
+        {part.type === 'water-level' && (() => {
+          const level = Math.min(100, Math.max(0, Number(part.props.levelPct ?? 25)));
+          const aoV = (level / 100) * 4.5;
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="water-lvl">
+                  {t.waterLevelLabel}: {level}%
+                </label>
+                <input
+                  id="water-lvl"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={level}
+                  onChange={(e) => onUpdatePartProps(part.id, { levelPct: Number(e.target.value) })}
+                />
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorAnalogOutLabel}</span>
+                <span className="metric-value">{aoV.toFixed(2)} V</span>
+              </div>
+            </>
+          );
+        })()}
+
+        {part.type === 'rain-sensor' && (() => {
+          const rain = Math.min(100, Math.max(0, Number(part.props.rainPct ?? 0)));
+          const th = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 40)));
+          const aoV = 4.9 - (rain / 100) * 4.5;
+          const detected = rain >= th;
+          return (
+            <>
+              <div className="field-group">
+                <label className="field-label" htmlFor="rain-pct">
+                  {t.rainIntensityLabel}: {rain}%
+                </label>
+                <input
+                  id="rain-pct"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={rain}
+                  onChange={(e) => onUpdatePartProps(part.id, { rainPct: Number(e.target.value) })}
+                />
+              </div>
+              <div className="field-group">
+                <label className="field-label" htmlFor="rain-th">
+                  {t.rainThresholdLabel}: {th}%
+                </label>
+                <input
+                  id="rain-th"
+                  type="range"
+                  min={5}
+                  max={95}
+                  value={th}
+                  onChange={(e) => onUpdatePartProps(part.id, { thresholdPct: Number(e.target.value) })}
+                />
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorDigitalOutLabel}</span>
+                <span className="metric-value">{detected ? t.rainDetected : t.rainDry}</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.sensorAnalogOutLabel}</span>
+                <span className="metric-value">{aoV.toFixed(2)} V</span>
+              </div>
+            </>
+          );
+        })()}
+
         {/* --- DISPLAYS --- */}
         {part.type === 'lcd-1602-i2c' && (
           <>
@@ -675,6 +838,49 @@ export const PartInspector: React.FC<PartInspectorProps> = ({
             <span className="metric-value">{servoAngle ?? 90}°</span>
           </div>
         )}
+
+        {part.type === 'servo-360' && (() => {
+          const s360 = snapshot?.servo360States?.[part.id];
+          const dirText =
+            s360?.direction === 'cw'
+              ? t.servo360Cw
+              : s360?.direction === 'ccw'
+                ? t.servo360Ccw
+                : t.servo360Stop;
+          const maxRpm = Math.min(200, Math.max(30, Number(part.props.maxRpm ?? 120)));
+          return (
+            <>
+              <div className="metric-card">
+                <span>{t.servo360SpeedLabel}</span>
+                <span className="metric-value">
+                  {s360 ? `${s360.rpm} RPM (${dirText})` : `0 RPM (${t.servo360Stop})`}
+                </span>
+              </div>
+              <div className="metric-card">
+                <span>{t.servo360AngleLabel}</span>
+                <span className="metric-value">{s360 ? s360.angleDeg.toFixed(1) : '0.0'}°</span>
+              </div>
+              <div className="metric-card">
+                <span>{t.servo360PulseLabel}</span>
+                <span className="metric-value">{s360 ? `${s360.pulseUs} µs` : '0 µs'}</span>
+              </div>
+              <div className="field-group">
+                <label className="field-label" htmlFor="servo360-rpm">
+                  {t.servo360MaxRpmLabel}: {maxRpm} RPM
+                </label>
+                <input
+                  id="servo360-rpm"
+                  type="range"
+                  min={30}
+                  max={200}
+                  step={10}
+                  value={maxRpm}
+                  onChange={(e) => onUpdatePartProps(part.id, { maxRpm: Number(e.target.value) })}
+                />
+              </div>
+            </>
+          );
+        })()}
 
         {part.type === 'buzzer' && (
           <>

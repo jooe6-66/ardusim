@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { CPU } from 'avr8js';
 import {
   autoTidyCircuit,
   autoTidyWires,
   autoWireFromSketch,
   buildNetlist,
+  ContinuousServoDevice,
   getPinWorldPosition,
   moveWireCorner,
   moveWireSegment,
@@ -1071,4 +1073,321 @@ test('autoWireFromSketch aligns array-loop LEDs & multi-zone inputs in pin order
   assert.equal(r1.rotation, 270);
   assert.equal(getPinWorldPosition(d1, m.get('diode')!, m.get('diode')!.pins[1]).x, getPinWorldPosition(r1, m.get('resistor')!, m.get('resistor')!.pins[0]).x);
   assert.equal(getPinWorldPosition(r1, m.get('resistor')!, m.get('resistor')!.pins[1]).x, getPinWorldPosition(led1, m.get('led')!, m.get('led')!.pins[0]).x);
+});
+
+test('PassiveCircuitSolver computes analog AO and digital comparator OUT/DO for new sensors', () => {
+  const m = new Map(testManifests);
+  m.set('ir-obstacle', {
+    type: 'ir-obstacle',
+    category: 'sensor',
+    width: 72,
+    height: 84,
+    name: { id: 'IR', en: 'IR' },
+    defaultProps: { distanceCm: 20, thresholdCm: 10 },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 80, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 80, type: 'gnd' },
+      { id: 'OUT', label: 'OUT', x: 42, y: 80, type: 'digital' },
+      { id: 'AO', label: 'AO', x: 54, y: 80, type: 'analog' },
+    ],
+  });
+  m.set('soil-moisture', {
+    type: 'soil-moisture',
+    category: 'sensor',
+    width: 72,
+    height: 92,
+    name: { id: 'Soil', en: 'Soil' },
+    defaultProps: { moisturePct: 35, thresholdPct: 50 },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'AO', x: 42, y: 88, type: 'analog' },
+      { id: 'DO', label: 'DO', x: 54, y: 88, type: 'digital' },
+    ],
+  });
+  m.set('water-level', {
+    type: 'water-level',
+    category: 'sensor',
+    width: 60,
+    height: 92,
+    name: { id: 'Water', en: 'Water' },
+    defaultProps: { levelPct: 25 },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'S/AO', x: 42, y: 88, type: 'analog' },
+    ],
+  });
+  m.set('rain-sensor', {
+    type: 'rain-sensor',
+    category: 'sensor',
+    width: 84,
+    height: 92,
+    name: { id: 'Rain', en: 'Rain' },
+    defaultProps: { rainPct: 0, thresholdPct: 40 },
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 24, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 36, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'AO', x: 48, y: 88, type: 'analog' },
+      { id: 'DO', label: 'DO', x: 60, y: 88, type: 'digital' },
+    ],
+  });
+
+  const parts: PartInstance[] = [
+    { id: 'uno1', type: 'arduino-uno', x: 0, y: 0, rotation: 0, props: {} },
+    { id: 'ir1', type: 'ir-obstacle', x: 100, y: 0, rotation: 0, props: { distanceCm: 5, thresholdCm: 10 } },
+    { id: 'soil1', type: 'soil-moisture', x: 200, y: 0, rotation: 0, props: { moisturePct: 20, thresholdPct: 50 } },
+    { id: 'water1', type: 'water-level', x: 300, y: 0, rotation: 0, props: { levelPct: 50 } },
+    { id: 'rain1', type: 'rain-sensor', x: 400, y: 0, rotation: 0, props: { rainPct: 75, thresholdPct: 40 } },
+  ];
+  const wires: Wire[] = [
+    { id: 'w1', from: { partId: 'ir1', pinId: 'AO' }, to: { partId: 'uno1', pinId: 'A0' }, color: '#16A34A' },
+    { id: 'w2', from: { partId: 'ir1', pinId: 'OUT' }, to: { partId: 'uno1', pinId: '2' }, color: '#2563EB' },
+    { id: 'w3', from: { partId: 'soil1', pinId: 'AO' }, to: { partId: 'uno1', pinId: 'A1' }, color: '#16A34A' },
+    { id: 'w4', from: { partId: 'soil1', pinId: 'DO' }, to: { partId: 'uno1', pinId: '3' }, color: '#2563EB' },
+    { id: 'w5', from: { partId: 'water1', pinId: 'AO' }, to: { partId: 'uno1', pinId: 'A2' }, color: '#16A34A' },
+    { id: 'w6', from: { partId: 'rain1', pinId: 'AO' }, to: { partId: 'uno1', pinId: 'A3' }, color: '#16A34A' },
+    { id: 'w7', from: { partId: 'rain1', pinId: 'DO' }, to: { partId: 'uno1', pinId: '4' }, color: '#2563EB' },
+  ];
+
+  const solver = new PassiveCircuitSolver();
+  const net1 = buildNetlist(parts, wires, m);
+  const res1 = solver.solve(parts, m, net1, [], 0.016, false);
+  const v = (partId: string, pinId: string) => res1.netVoltages.get(net1.pinToNet.get(`${partId}:${pinId}`)!) ?? -1;
+
+  // IR obstacle: 5cm <= 10cm -> OUT=0V, AO = 0.2 + (3/28)*4.5 = ~0.682V
+  assert.ok(Math.abs(v('ir1', 'OUT') - 0) < 0.05);
+  assert.ok(Math.abs(v('ir1', 'AO') - (0.2 + (3 / 28) * 4.5)) < 0.05);
+
+  // Soil moisture: 20% < 50% -> DO=5V, AO = 4.8 - 0.2*4.3 = 3.94V
+  assert.ok(Math.abs(v('soil1', 'DO') - 5.0) < 0.05);
+  assert.ok(Math.abs(v('soil1', 'AO') - 3.94) < 0.05);
+
+  // Water level: 50% -> AO = 2.25V
+  assert.ok(Math.abs(v('water1', 'AO') - 2.25) < 0.05);
+
+  // Rain sensor: 75% >= 40% -> DO=0V, AO = 4.9 - 0.75*4.5 = 1.525V
+  assert.ok(Math.abs(v('rain1', 'DO') - 0) < 0.05);
+  assert.ok(Math.abs(v('rain1', 'AO') - 1.525) < 0.05);
+
+  // Flip thresholds and re-solve
+  parts[1].props = { distanceCm: 25, thresholdCm: 10 };
+  parts[2].props = { moisturePct: 80, thresholdPct: 50 };
+  parts[3].props = { levelPct: 100 };
+  parts[4].props = { rainPct: 10, thresholdPct: 40 };
+  const res2 = solver.solve(parts, m, net1, [], 0.016, false);
+  const v2 = (partId: string, pinId: string) => res2.netVoltages.get(net1.pinToNet.get(`${partId}:${pinId}`)!) ?? -1;
+
+  assert.ok(Math.abs(v2('ir1', 'OUT') - 5.0) < 0.05);
+  assert.ok(Math.abs(v2('ir1', 'AO') - (0.2 + (23 / 28) * 4.5)) < 0.05);
+  assert.ok(Math.abs(v2('soil1', 'DO') - 0) < 0.05);
+  assert.ok(Math.abs(v2('soil1', 'AO') - 1.36) < 0.05);
+  assert.ok(Math.abs(v2('water1', 'AO') - 4.5) < 0.05);
+  assert.ok(Math.abs(v2('rain1', 'DO') - 5.0) < 0.05);
+  assert.ok(Math.abs(v2('rain1', 'AO') - 4.45) < 0.05);
+});
+
+test('ContinuousServoDevice decodes PWM speed, direction, 1470-1530us deadband, and timeout', () => {
+  const clockHz = 16_000_000;
+  const cpu = new CPU(new Uint16Array(0x400));
+  const servo = new ContinuousServoDevice(cpu, clockHz, 120);
+
+  const sendPulse = (widthUs: number, frameMs = 20) => {
+    const frameCycles = Math.round((frameMs * clockHz) / 1000);
+    const pulseCycles = Math.round((widthUs * clockHz) / 1_000_000);
+    const start = cpu.cycles;
+    servo.onSignalChange(true);
+    cpu.cycles = start + pulseCycles;
+    servo.onSignalChange(false);
+    cpu.cycles = start + frameCycles;
+  };
+
+  // 1000us -> full CCW (-120 RPM), negative cumulative angle
+  sendPulse(1000);
+  sendPulse(1000);
+  const ccwState = servo.getState();
+  assert.equal(ccwState.direction, 'ccw');
+  assert.equal(ccwState.rpm, -120);
+  assert.ok(ccwState.angleDeg < 0);
+
+  // 1250us -> partial CCW (-120 < rpm < 0)
+  sendPulse(1250);
+  const partialCcw = servo.getState();
+  assert.equal(partialCcw.direction, 'ccw');
+  assert.ok(partialCcw.rpm < 0 && partialCcw.rpm > -120);
+
+  // Deadband: 1500us & 1472us (Servo.write(90)) -> stop with zero drift
+  sendPulse(1500);
+  const stop1 = servo.getState();
+  assert.equal(stop1.direction, 'stop');
+  assert.equal(stop1.rpm, 0);
+  const stoppedAngle = stop1.angleDeg;
+
+  sendPulse(1472);
+  sendPulse(1472);
+  const stop2 = servo.getState();
+  assert.equal(stop2.direction, 'stop');
+  assert.equal(stop2.rpm, 0);
+  assert.equal(stop2.angleDeg, stoppedAngle);
+
+  // 2000us -> full CW (+120 RPM), positive angle delta
+  sendPulse(2000);
+  sendPulse(2000);
+  const cwState = servo.getState();
+  assert.equal(cwState.direction, 'cw');
+  assert.equal(cwState.rpm, 120);
+  assert.ok(cwState.angleDeg > stoppedAngle);
+
+  // >100ms without PWM pulses -> automatic stop timeout
+  cpu.cycles += Math.round(0.15 * clockHz);
+  const timedOut = servo.getState();
+  assert.equal(timedOut.direction, 'stop');
+  assert.equal(timedOut.rpm, 0);
+  assert.equal(timedOut.pulseUs, 0);
+});
+
+test('autoWireFromSketch wires IR obstacle, soil moisture, water level, rain sensor, servo-360, and keeps PIR distinct', () => {
+  const m = new Map(testManifests);
+  const unoPins: PartManifest['pins'] = [
+    { id: '5V', label: '5V', x: 134, y: 182, type: 'power', exitDir: 'down', fixedVoltage: 5.0 },
+    { id: 'GND.1', label: 'GND', x: 86, y: 14, type: 'gnd', exitDir: 'up', fixedVoltage: 0 },
+    { id: 'GND.2', label: 'GND', x: 146, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+    { id: 'GND.3', label: 'GND', x: 158, y: 182, type: 'gnd', exitDir: 'down', fixedVoltage: 0 },
+  ];
+  for (let pin = 2; pin <= 11; pin++) {
+    unoPins.push({ id: String(pin), label: `D${pin}`, x: 236 - (pin - 2) * 12, y: 14, type: 'digital', exitDir: 'up' });
+  }
+  for (let a = 0; a <= 3; a++) {
+    unoPins.push({ id: `A${a}`, label: `A${a}`, x: 200 + a * 12, y: 182, type: 'analog', exitDir: 'down' });
+  }
+  m.set('arduino-uno', {
+    type: 'arduino-uno',
+    category: 'mcu',
+    width: 276,
+    height: 196,
+    name: { id: 'Arduino Uno', en: 'Arduino Uno' },
+    defaultProps: {},
+    pins: unoPins,
+  });
+  m.set('pir', {
+    type: 'pir',
+    category: 'sensor',
+    width: 72,
+    height: 72,
+    name: { id: 'PIR', en: 'PIR' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 24, y: 68, type: 'power' },
+      { id: 'OUT', label: 'OUT', x: 36, y: 68, type: 'digital' },
+      { id: 'GND', label: 'GND', x: 48, y: 68, type: 'gnd' },
+    ],
+  });
+  m.set('ir-obstacle', {
+    type: 'ir-obstacle',
+    category: 'sensor',
+    width: 72,
+    height: 84,
+    name: { id: 'IR', en: 'IR' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 80, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 80, type: 'gnd' },
+      { id: 'OUT', label: 'OUT', x: 42, y: 80, type: 'digital' },
+      { id: 'AO', label: 'AO', x: 54, y: 80, type: 'analog' },
+    ],
+  });
+  m.set('soil-moisture', {
+    type: 'soil-moisture',
+    category: 'sensor',
+    width: 72,
+    height: 92,
+    name: { id: 'Soil', en: 'Soil' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'AO', x: 42, y: 88, type: 'analog' },
+      { id: 'DO', label: 'DO', x: 54, y: 88, type: 'digital' },
+    ],
+  });
+  m.set('water-level', {
+    type: 'water-level',
+    category: 'sensor',
+    width: 60,
+    height: 92,
+    name: { id: 'Water', en: 'Water' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 18, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 30, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'S/AO', x: 42, y: 88, type: 'analog' },
+    ],
+  });
+  m.set('rain-sensor', {
+    type: 'rain-sensor',
+    category: 'sensor',
+    width: 84,
+    height: 92,
+    name: { id: 'Rain', en: 'Rain' },
+    defaultProps: {},
+    pins: [
+      { id: 'VCC', label: 'VCC', x: 24, y: 88, type: 'power' },
+      { id: 'GND', label: 'GND', x: 36, y: 88, type: 'gnd' },
+      { id: 'AO', label: 'AO', x: 48, y: 88, type: 'analog' },
+      { id: 'DO', label: 'DO', x: 60, y: 88, type: 'digital' },
+    ],
+  });
+  m.set('servo-360', {
+    type: 'servo-360',
+    category: 'motor',
+    width: 96,
+    height: 76,
+    name: { id: 'Servo 360', en: 'Servo 360' },
+    defaultProps: { maxRpm: 120 },
+    pins: [
+      { id: 'GND', label: 'GND', x: 24, y: 72, type: 'gnd' },
+      { id: 'VCC', label: 'VCC', x: 36, y: 72, type: 'power' },
+      { id: 'SIG', label: 'SIG', x: 48, y: 72, type: 'digital' },
+    ],
+  });
+
+  const uno: PartInstance = { id: 'uno1', type: 'arduino-uno', x: 36, y: 156, rotation: 0, props: {} };
+  const sketch = `
+    #include <Servo.h>
+    Servo wheel360;
+    const int IR_AO = A0;
+    const int IR_OUT = 2;
+    const int SOIL_AO = A1;
+    const int SOIL_DO = 3;
+    const int WATER_LEVEL_PIN = A2;
+    const int RAIN_AO = A3;
+    const int RAIN_DO = 4;
+    const int PIR_PIN = 5;
+    void setup() {
+      wheel360.attach(9);
+      pinMode(IR_OUT, INPUT);
+      pinMode(SOIL_DO, INPUT);
+      pinMode(RAIN_DO, INPUT);
+      pinMode(PIR_PIN, INPUT);
+    }
+    void loop() {
+      analogRead(IR_AO);
+      digitalRead(IR_OUT);
+      analogRead(SOIL_AO);
+      digitalRead(SOIL_DO);
+      analogRead(WATER_LEVEL_PIN);
+      analogRead(RAIN_AO);
+      digitalRead(RAIN_DO);
+      digitalRead(PIR_PIN);
+      wheel360.write(180);
+    }
+  `;
+
+  const res = autoWireFromSketch(sketch, uno, [uno], [], m);
+  assert.equal(res.parts.filter((p) => p.type === 'ir-obstacle').length, 1);
+  assert.equal(res.parts.filter((p) => p.type === 'soil-moisture').length, 1);
+  assert.equal(res.parts.filter((p) => p.type === 'water-level').length, 1);
+  assert.equal(res.parts.filter((p) => p.type === 'rain-sensor').length, 1);
+  assert.equal(res.parts.filter((p) => p.type === 'servo-360').length, 1);
+  assert.equal(res.parts.filter((p) => p.type === 'pir').length, 1);
 });

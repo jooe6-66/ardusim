@@ -336,6 +336,73 @@ export class PassiveCircuitSolver {
           const motion = Boolean(part.props.motion);
           voltageSources.push({ node: out, volts: motion ? 5.0 : 0.0, g: 1 / 100 });
         }
+      } else if (part.type === 'ir-obstacle') {
+        const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
+        const out = touchNet(netlist.pinToNet.get(`${part.id}:OUT`));
+        const distanceCm = Math.min(30, Math.max(2, Number(part.props.distanceCm ?? 20)));
+        const thresholdCm = Math.min(30, Math.max(2, Number(part.props.thresholdCm ?? 10)));
+        if (ao >= 0) {
+          voltageSources.push({
+            node: ao,
+            volts: 0.2 + ((distanceCm - 2) / 28) * 4.5,
+            g: 1 / 200,
+          });
+        }
+        if (out >= 0) {
+          voltageSources.push({
+            node: out,
+            volts: distanceCm <= thresholdCm ? 0.0 : 5.0,
+            g: 1 / 100,
+          });
+        }
+      } else if (part.type === 'soil-moisture') {
+        const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
+        const dOut = touchNet(netlist.pinToNet.get(`${part.id}:DO`));
+        const moisturePct = Math.min(100, Math.max(0, Number(part.props.moisturePct ?? 35)));
+        const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 50)));
+        if (ao >= 0) {
+          voltageSources.push({
+            node: ao,
+            volts: 4.8 - (moisturePct / 100) * 4.3,
+            g: 1 / 200,
+          });
+        }
+        if (dOut >= 0) {
+          voltageSources.push({
+            node: dOut,
+            volts: moisturePct >= thresholdPct ? 0.0 : 5.0,
+            g: 1 / 100,
+          });
+        }
+      } else if (part.type === 'water-level') {
+        const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
+        const levelPct = Math.min(100, Math.max(0, Number(part.props.levelPct ?? 25)));
+        if (ao >= 0) {
+          voltageSources.push({
+            node: ao,
+            volts: (levelPct / 100) * 4.5,
+            g: 1 / 200,
+          });
+        }
+      } else if (part.type === 'rain-sensor') {
+        const ao = touchNet(netlist.pinToNet.get(`${part.id}:AO`));
+        const dOut = touchNet(netlist.pinToNet.get(`${part.id}:DO`));
+        const rainPct = Math.min(100, Math.max(0, Number(part.props.rainPct ?? 0)));
+        const thresholdPct = Math.min(95, Math.max(5, Number(part.props.thresholdPct ?? 40)));
+        if (ao >= 0) {
+          voltageSources.push({
+            node: ao,
+            volts: 4.9 - (rainPct / 100) * 4.5,
+            g: 1 / 200,
+          });
+        }
+        if (dOut >= 0) {
+          voltageSources.push({
+            node: dOut,
+            volts: rainPct >= thresholdPct ? 0.0 : 5.0,
+            g: 1 / 100,
+          });
+        }
       } else if (part.type === 'led') {
         const a = touchNet(netlist.pinToNet.get(`${part.id}:A`));
         const c = touchNet(netlist.pinToNet.get(`${part.id}:C`));

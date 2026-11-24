@@ -142,6 +142,7 @@ export interface SimSnapshot {
   capacitorVoltages: Record<string, number>;
   diodeConducting: Record<string, boolean>;
   servoAngles: Record<string, number>;
+  servo360States?: Record<string, Servo360VisualState>;
   buzzerHz: Record<string, number>;
   relayEnergized: Record<string, boolean>;
   motorStates: Record<string, MotorVisualState>;
@@ -156,6 +157,13 @@ export interface SimSnapshot {
   bluetoothLogs: Record<string, string>;
   pinVoltages: Record<string, number>;
   warnings: SimWarning[];
+}
+
+export interface Servo360VisualState {
+  angleDeg: number; // cumulative angle in degrees
+  rpm: number; // signed RPM (+ CW, - CCW, 0 stop)
+  pulseUs: number; // last measured PWM pulse width in microseconds
+  direction: 'cw' | 'ccw' | 'stop';
 }
 
 export type PinModeState = 'INPUT' | 'INPUT_PULLUP' | 'OUTPUT_LOW' | 'OUTPUT_HIGH';

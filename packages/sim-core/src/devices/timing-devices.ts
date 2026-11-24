@@ -1,4 +1,5 @@
 import { CPU } from 'avr8js';
+import type { Servo360VisualState } from '../types.js';
 
 export type SetDigitalPinFn = (high: boolean) => void;
 
@@ -171,6 +172,83 @@ export class ServoDevice {
         this.angleDeg = Math.round(Math.min(180, Math.max(0, norm * 180)));
       }
     }
+  }
+}
+
+/**
+ * 360-degree continuous rotation servo decoder.
+ * Deadband 1470..1530 us stops cleanly (covers both Servo.write(90)=1472us and writeMicroseconds(1500)).
+ */
+export class ContinuousServoDevice {
+  maxRpm: number;
+  angleDeg = 0;
+  rpm = 0;
+  pulseUs = 0;
+  private riseCycle: number | null = null;
+  private lastHigh = false;
+  private lastUpdateCycle = 0;
+  private lastPulseCycle = -1;
+
+  constructor(private readonly cpu: CPU, private readonly clockHz: number, maxRpm = 120) {
+    this.maxRpm = maxRpm;
+  }
+
+  private advanceTo(nowCycle: number): void {
+    if (this.lastPulseCycle >= 0) {
+      const timeoutCycle = this.lastPulseCycle + 0.1 * this.clockHz;
+      if (nowCycle > timeoutCycle) {
+        const endCycle = Math.max(this.lastUpdateCycle, timeoutCycle);
+        const dtSec = Math.max(0, (endCycle - this.lastUpdateCycle) / this.clockHz);
+        this.angleDeg += this.rpm * 6 * dtSec;
+        this.rpm = 0;
+        this.pulseUs = 0;
+        this.lastUpdateCycle = nowCycle;
+        this.lastPulseCycle = -1;
+        return;
+      }
+    }
+    const dtSec = Math.max(0, (nowCycle - this.lastUpdateCycle) / this.clockHz);
+    this.angleDeg += this.rpm * 6 * dtSec;
+    this.lastUpdateCycle = nowCycle;
+  }
+
+  onSignalChange(high: boolean): void {
+    if (high === this.lastHigh) return;
+    this.lastHigh = high;
+    const now = this.cpu.cycles;
+
+    if (high) {
+      this.riseCycle = now;
+      return;
+    }
+    if (this.riseCycle !== null) {
+      const widthUs = ((now - this.riseCycle) * 1_000_000) / this.clockHz;
+      this.riseCycle = null;
+      if (widthUs >= 400 && widthUs <= 2600) {
+        this.advanceTo(now);
+        let speedNorm = 0;
+        if (widthUs < 1470) {
+          speedNorm = -Math.min(1, (1470 - widthUs) / 470);
+        } else if (widthUs > 1530) {
+          speedNorm = Math.min(1, (widthUs - 1530) / 470);
+        }
+        this.rpm = speedNorm * Math.max(1, this.maxRpm);
+        this.pulseUs = Math.round(widthUs);
+        this.lastPulseCycle = now;
+        this.lastUpdateCycle = now;
+      }
+    }
+  }
+
+  getState(): Servo360VisualState {
+    this.advanceTo(this.cpu.cycles);
+    const roundedRpm = Math.round(this.rpm);
+    return {
+      angleDeg: Math.round(this.angleDeg * 10) / 10,
+      rpm: roundedRpm,
+      pulseUs: this.pulseUs,
+      direction: roundedRpm > 0 ? 'cw' : roundedRpm < 0 ? 'ccw' : 'stop',
+    };
   }
 }
 
